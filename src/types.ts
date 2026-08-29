@@ -342,4 +342,6 @@ export interface Transaction {
   rentalId: string | null
   /** Привязка к активу; null — операция без актива */
   assetId: string | null
+  /** Системная операция (покупка/продажа техники) — не редактируется и не удаляется */
+  system: boolean
 }

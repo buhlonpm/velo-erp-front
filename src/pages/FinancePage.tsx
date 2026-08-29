@@ -6,6 +6,7 @@ import {
   Banknote,
   CreditCard,
   Landmark,
+  Lock,
   Pencil,
   Plus,
   Trash2,
@@ -370,24 +371,33 @@ function OperationsTab({
                         </span>
                       </td>
                       <td className="td text-right">
-                        <span className="inline-flex gap-1">
-                          <button
-                            type="button"
-                            title="Редактировать"
-                            onClick={() => onEdit(transaction)}
-                            className="rounded-lg p-2 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
+                        {transaction.system ? (
+                          <span
+                            className="inline-flex p-2 text-zinc-600"
+                            title="Системная операция — создана автоматически (покупка/продажа техники), изменить нельзя"
                           >
-                            <Pencil size={16} />
-                          </button>
-                          <button
-                            type="button"
-                            title="Удалить"
-                            onClick={() => onDelete(transaction)}
-                            className="rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </span>
+                            <Lock size={14} />
+                          </span>
+                        ) : (
+                          <span className="inline-flex gap-1">
+                            <button
+                              type="button"
+                              title="Редактировать"
+                              onClick={() => onEdit(transaction)}
+                              className="rounded-lg p-2 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
+                            >
+                              <Pencil size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              title="Удалить"
+                              onClick={() => onDelete(transaction)}
+                              className="rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </span>
+                        )}
                       </td>
                     </tr>
                   )
