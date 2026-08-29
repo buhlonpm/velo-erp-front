@@ -4,6 +4,7 @@ import {
   Bike,
   CheckCircle2,
   ClipboardList,
+  Clock,
   Wallet,
   Wrench,
 } from 'lucide-react'
@@ -67,6 +68,7 @@ export function DashboardPage() {
   }, [canViewFinance])
 
   const available = assets.filter((asset) => asset.status === 'available').length
+  const reserved = assets.filter((asset) => asset.status === 'reserved').length
   const rented = assets.filter((asset) => asset.status === 'rented').length
   const inMaintenance = assets.filter((asset) => asset.status === 'maintenance').length
 
@@ -90,9 +92,10 @@ export function DashboardPage() {
       )}
 
       {/* Статистика */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
         <StatCard title="Всего активов" value={String(assets.length)} icon={Bike} />
         <StatCard title="Свободно" value={String(available)} icon={CheckCircle2} accent />
+        <StatCard title="В резерве" value={String(reserved)} icon={Clock} />
         <StatCard title="В аренде" value={String(rented)} icon={ClipboardList} />
         <StatCard title="На обслуживании" value={String(inMaintenance)} icon={Wrench} />
         {monthRevenue != null && (

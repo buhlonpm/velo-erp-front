@@ -4,6 +4,7 @@ import type {
   AssetStatus,
   AssetType,
   CategoryKind,
+  RentalEventType,
   RentalKind,
   RentalStatus,
   TariffUnit,
@@ -21,6 +22,7 @@ export const assetTypeLabels: Record<AssetType, string> = {
 export const assetStatusLabels: Record<AssetStatus, string> = {
   available: 'Доступен',
   mounted: 'На технике',
+  reserved: 'В резерве',
   rented: 'В аренде',
   maintenance: 'Обслуживание',
   sold: 'Продан',
@@ -30,6 +32,7 @@ export const assetStatusLabels: Record<AssetStatus, string> = {
 export const assetStatusTones: Record<AssetStatus, Tone> = {
   available: 'emerald',
   mounted: 'sky',
+  reserved: 'amber',
   rented: 'sky',
   maintenance: 'amber',
   sold: 'zinc',
@@ -56,16 +59,20 @@ export const assetEventTypeLabels: Record<AssetEventType, string> = {
 }
 
 export const rentalStatusLabels: Record<RentalStatus, string> = {
+  draft: 'Черновик',
   active: 'Активна',
   overdue: 'Просрочена',
   completed: 'Завершена',
+  completed_early: 'Завершена досрочно',
   cancelled: 'Отменена',
 }
 
 export const rentalStatusTones: Record<RentalStatus, Tone> = {
+  draft: 'amber',
   active: 'emerald',
   overdue: 'red',
   completed: 'zinc',
+  completed_early: 'zinc',
   cancelled: 'zinc',
 }
 
@@ -80,6 +87,26 @@ export const tariffUnitLabels: Record<TariffUnit, string> = {
   day: 'день',
   week: 'неделя',
   month: 'месяц',
+}
+
+/** Длительность единицы тарифа в секундах (месяц = 30 суток, как в TariffUnit на бэке) */
+export const tariffUnitSeconds: Record<TariffUnit, number> = {
+  hour: 3_600,
+  day: 86_400,
+  week: 604_800,
+  month: 2_592_000,
+}
+
+/** Подписи событий аренды (лента истории) */
+export const rentalEventTypeLabels: Record<RentalEventType, string> = {
+  created: 'Создание',
+  payment: 'Оплата',
+  issued: 'Выдача',
+  extension: 'Продление',
+  item_return: 'Возврат позиции',
+  refund: 'Возврат денег',
+  completed: 'Завершение',
+  cancelled: 'Отмена',
 }
 
 export const accountTypeLabels: Record<AccountType, string> = {

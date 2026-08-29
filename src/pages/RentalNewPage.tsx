@@ -3,9 +3,9 @@ import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
-import type { Asset, AssetDetail, BikeModel, Customer, Rental, RentalKind, Tariff, TariffUnit } from '../types'
-import { formatMoney } from '../lib/format'
-import { assetTypeLabels, rentalKindLabels, tariffUnitLabels } from '../lib/labels'
+import type { Asset, AssetDetail, AssetType, BikeModel, Customer, Rental, RentalKind, TariffUnit } from '../types'
+import { formatDateTime, formatMoney } from '../lib/format'
+import { assetTypeLabels, rentalKindLabels, tariffUnitLabels, tariffUnitSeconds } from '../lib/labels'
 
 /** Значение для input datetime-local из Date (в локальной TZ) */
 function toLocalInputValue(date: Date): string {
@@ -13,23 +13,21 @@ function toLocalInputValue(date: Date): string {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16)
 }
 
-/** Дочерняя строка — смонтированная на велосипеде АКБ (уходит с родителем) */
+/** Дочерняя строка — АКБ/зарядник, смонтированные на велосипеде (едут комплектом за 0 ₽) */
 interface ChildRow {
   assetId: string
   name: string
   inventoryNumber: string
-  /** Тариф доп. АКБ, ₽/час (по умолчанию 0) */
-  rate: string
+  type: AssetType
 }
 
 interface ItemRow {
   key: number
   assetId: string
-  /** Выбранный тариф модели ('' — почасовая ставка вручную) */
-  tariffId: string
-  /** Цена, ₽ за tariffUnit (строка из input) */
+  /** Цена, ₽ за единицу срока аренды (строка из input) */
   rate: string
-  tariffUnit: TariffUnit
+  /** Единица тарифа — только для rent_to_own (у rent она = единице срока аренды) */
+  tariffUnit: TariffUnit | ''
   children: ChildRow[]
 }
 
@@ -37,9 +35,8 @@ let rowKey = 0
 const newRow = (): ItemRow => ({
   key: ++rowKey,
   assetId: '',
-  tariffId: '',
   rate: '',
-  tariffUnit: 'hour',
+  tariffUnit: '',
   children: [],
 })
 
@@ -54,9 +51,11 @@ export function RentalNewPage() {
   const [customerId, setCustomerId] = useState('')
   const [kind, setKind] = useState<RentalKind>('rent')
   const [startAt, setStartAt] = useState(() => toLocalInputValue(new Date()))
-  const [plannedEndAt, setPlannedEndAt] = useState('')
+  // Срок аренды: конец периода считает сервер (plannedEndAt = startAt + duration × unit);
+  // единица срока — она же единица тарифа всех позиций
+  const [duration, setDuration] = useState('')
+  const [durationUnit, setDurationUnit] = useState<TariffUnit>('day')
   const [buyoutPrice, setBuyoutPrice] = useState('')
-  const [deposit, setDeposit] = useState('')
   const [comment, setComment] = useState('')
   const [rows, setRows] = useState<ItemRow[]>([newRow()])
   const [submitting, setSubmitting] = useState(false)
@@ -82,44 +81,70 @@ export function RentalNewPage() {
   const assetById = new Map(availableAssets.map((asset) => [asset.id, asset]))
   const modelById = new Map(models.map((model) => [model.id, model]))
 
-  /** Тарифы модели велосипеда для строки; пусто для АКБ/зарядников и велосипедов без модели */
-  const tariffsForRow = (row: ItemRow): Tariff[] => {
-    const asset = assetById.get(row.assetId)
-    if (!asset || asset.type !== 'bike' || !asset.modelId) return []
-    return modelById.get(asset.modelId)?.tariffs ?? []
+  /** Цена из справочника модели для единицы срока аренды; undefined — нет тарифа или не велосипед */
+  const catalogPrice = (assetId: string, unit: TariffUnit): number | undefined => {
+    const asset = assetById.get(assetId)
+    if (!asset || asset.type !== 'bike' || !asset.modelId) return undefined
+    return modelById.get(asset.modelId)?.tariffs.find((tariff) => tariff.unit === unit)?.price
   }
 
   const updateRow = (key: number, patch: Partial<ItemRow>) => {
     setRows((prev) => prev.map((row) => (row.key === key ? { ...row, ...patch } : row)))
   }
 
-  // При выборе велосипеда дотягиваем его смонтированные АКБ как дочерние позиции
+  // Смена единицы срока: переподставляем цены велосипедов из справочника модели;
+  // нет тарифа с такой единицей — оставляем введённую сумму (в справочник ничего не пишется)
+  const handleDurationUnitChange = (unit: TariffUnit) => {
+    setDurationUnit(unit)
+    setRows((prev) =>
+      prev.map((row) => {
+        if (!row.assetId) return row
+        const price = catalogPrice(row.assetId, unit)
+        return price !== undefined ? { ...row, rate: String(price) } : row
+      }),
+    )
+  }
+
+  // Общая сумма аренды = срок × сумма цен позиций (единица тарифа = единице срока; комплект 0 ₽)
+  const totalAmount =
+    kind === 'rent' && Number(duration) > 0
+      ? rows
+          .filter((row) => row.assetId && row.rate.trim())
+          .reduce((sum, row) => sum + Number(duration) * Number(row.rate), 0)
+      : 0
+  // Предпросмотр фиксированного конца периода (его посчитает сервер)
+  const plannedEndPreview =
+    kind === 'rent' && startAt && Number(duration) > 0
+      ? new Date(
+          new Date(startAt).getTime() + Number(duration) * tariffUnitSeconds[durationUnit] * 1000,
+        )
+      : null
+
+  // При выборе велосипеда дотягиваем смонтированные АКБ и зарядник как дочерние строки
   const handleAssetSelect = async (row: ItemRow, assetId: string) => {
     const asset = availableAssets.find((a) => a.id === assetId)
-    updateRow(row.key, { assetId, tariffId: '', rate: '', tariffUnit: 'hour', children: [] })
+    const price = assetId ? catalogPrice(assetId, durationUnit) : undefined
+    updateRow(row.key, {
+      assetId,
+      rate: price !== undefined ? String(price) : '',
+      tariffUnit: '',
+      children: [],
+    })
     if (asset?.type === 'bike') {
       try {
         const detail = await api<AssetDetail>(`/assets/${assetId}/detail`)
-        const children: ChildRow[] = detail.mountedBatteries.map((battery) => ({
-          assetId: battery.id,
-          name: battery.name,
-          inventoryNumber: battery.inventoryNumber,
-          rate: '0',
-        }))
+        const children: ChildRow[] = [...detail.mountedBatteries, ...detail.mountedChargers].map(
+          (kit) => ({
+            assetId: kit.id,
+            name: kit.name,
+            inventoryNumber: kit.inventoryNumber,
+            type: kit.type,
+          }),
+        )
         setRows((prev) => prev.map((r) => (r.key === row.key ? { ...r, children } : r)))
       } catch {
-        // Не удалось узнать комплект — сервер подтянет АКБ сам с тарифом 0
+        // Не удалось узнать комплект — сервер подтянет АКБ/зарядник сам с тарифом 0
       }
-    }
-  }
-
-  // Выбор тарифа модели: подставляем цену и единицу; пустое — почасовая ставка вручную
-  const handleTariffSelect = (row: ItemRow, tariffId: string) => {
-    const tariff = tariffsForRow(row).find((t) => t.id === tariffId)
-    if (tariff) {
-      updateRow(row.key, { tariffId, rate: String(tariff.price), tariffUnit: tariff.unit })
-    } else {
-      updateRow(row.key, { tariffId: '', rate: '', tariffUnit: 'hour' })
     }
   }
 
@@ -138,24 +163,28 @@ export function RentalNewPage() {
       setError('Укажите цену для каждой позиции')
       return
     }
-    if (kind === 'rent' && !plannedEndAt) {
-      setError('Укажите плановую дату окончания')
+    if (kind === 'rent' && (!duration.trim() || Number(duration) <= 0)) {
+      setError('Укажите срок аренды')
       return
     }
-    if (kind === 'rent_to_own' && !buyoutPrice.trim()) {
-      setError('Укажите цену выкупа')
-      return
+    if (kind === 'rent_to_own') {
+      if (!buyoutPrice.trim()) {
+        setError('Укажите цену выкупа')
+        return
+      }
+      if (chosenRows.some((row) => !row.tariffUnit)) {
+        setError('Выберите единицу тарифа (час/день/неделя/месяц) для каждой позиции')
+        return
+      }
     }
 
-    // Дочерние АКБ шлём явными позициями — сервер свяжет их с родителем и возьмёт наш тариф
-    const items = chosenRows.flatMap((row) => [
-      { assetId: row.assetId, tariffUnit: row.tariffUnit, rate: Number(row.rate) },
-      ...row.children.map((child) => ({
-        assetId: child.assetId,
-        tariffUnit: 'hour' as TariffUnit,
-        rate: Number(child.rate) || 0,
-      })),
-    ])
+    // Дочерний комплект (АКБ/зарядник) не шлём — сервер подтянет его сам с тарифом 0.
+    // Единицу тарифа при rent не шлём — сервер ставит единицу срока аренды.
+    const items = chosenRows.map((row) => ({
+      assetId: row.assetId,
+      rate: Number(row.rate),
+      ...(kind === 'rent_to_own' ? { tariffUnit: row.tariffUnit } : {}),
+    }))
 
     setSubmitting(true)
     setError('')
@@ -166,9 +195,8 @@ export function RentalNewPage() {
           customerId,
           kind,
           ...(startAt ? { startAt: new Date(startAt).toISOString() } : {}),
-          ...(kind === 'rent' ? { plannedEndAt: new Date(plannedEndAt).toISOString() } : {}),
+          ...(kind === 'rent' ? { duration: Number(duration), durationUnit } : {}),
           ...(kind === 'rent_to_own' ? { buyoutPrice: Number(buyoutPrice) } : {}),
-          ...(deposit.trim() ? { deposit: Number(deposit) } : {}),
           ...(comment.trim() ? { comment: comment.trim() } : {}),
           items,
         }),
@@ -258,14 +286,34 @@ export function RentalNewPage() {
               </div>
               {kind === 'rent' ? (
                 <div>
-                  <label className="mb-1.5 block text-sm text-zinc-400">Плановое окончание</label>
-                  <input
-                    type="datetime-local"
-                    required
-                    value={plannedEndAt}
-                    onChange={(event) => setPlannedEndAt(event.target.value)}
-                    className="input"
-                  />
+                  <label className="mb-1.5 block text-sm text-zinc-400">Срок аренды *</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={duration}
+                      onChange={(event) => setDuration(event.target.value)}
+                      className="input w-20 shrink-0"
+                      placeholder="3"
+                    />
+                    <select
+                      value={durationUnit}
+                      onChange={(event) => handleDurationUnitChange(event.target.value as TariffUnit)}
+                      className="input"
+                    >
+                      {(Object.keys(tariffUnitLabels) as TariffUnit[]).map((unit) => (
+                        <option key={unit} value={unit}>
+                          {tariffUnitLabels[unit]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {plannedEndPreview && (
+                    <p className="mt-1 text-xs text-zinc-500">
+                      Окончание: {formatDateTime(plannedEndPreview.toISOString())}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div>
@@ -282,17 +330,19 @@ export function RentalNewPage() {
               )}
             </div>
 
-            <div>
-              <label className="mb-1.5 block text-sm text-zinc-400">Залог, ₽</label>
-              <input
-                type="number"
-                min={0}
-                value={deposit}
-                onChange={(event) => setDeposit(event.target.value)}
-                className="input"
-                placeholder="0"
-              />
-            </div>
+            {/* Общая сумма аренды — вычисляемая, меняется ценами позиций; оплата — в карточке аренды */}
+            {kind === 'rent' && (
+              <div className="rounded-lg border border-emerald-400/30 bg-emerald-400/5 p-4">
+                <p className="text-xs uppercase tracking-wide text-zinc-400">Общая сумма аренды</p>
+                <p className="mt-1 text-2xl font-semibold text-emerald-400">
+                  {formatMoney(totalAmount)}
+                </p>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Считается из цен позиций — чтобы изменить, поправьте цену тарифа в позиции.
+                  Оплата принимается в карточке аренды после создания.
+                </p>
+              </div>
+            )}
             <div>
               <label className="mb-1.5 block text-sm text-zinc-400">Комментарий</label>
               <textarea
@@ -321,7 +371,12 @@ export function RentalNewPage() {
 
             <div className="space-y-3">
               {rows.map((row) => {
-                const rowTariffs = tariffsForRow(row)
+                const unitLabel =
+                  kind === 'rent'
+                    ? tariffUnitLabels[durationUnit]
+                    : row.tariffUnit
+                      ? tariffUnitLabels[row.tariffUnit]
+                      : '—'
                 return (
                   <div key={row.key} className="rounded-lg border border-white/10 p-3">
                     <div className="flex items-center gap-2">
@@ -341,18 +396,22 @@ export function RentalNewPage() {
                             </option>
                           ))}
                       </select>
-                      {rowTariffs.length > 0 && (
+                      {/* Единица тарифа = единице срока аренды; выбор только у rent_to_own (срока нет) */}
+                      {kind === 'rent_to_own' && row.assetId && (
                         <select
-                          value={row.tariffId}
-                          onChange={(event) => handleTariffSelect(row, event.target.value)}
-                          className="input w-52 shrink-0"
-                          title="Тариф"
+                          value={row.tariffUnit}
+                          onChange={(event) =>
+                            updateRow(row.key, { tariffUnit: event.target.value as TariffUnit })
+                          }
+                          className="input w-32 shrink-0"
+                          title="Единица тарифа"
                         >
-                          <option value="">Почасовой</option>
-                          {rowTariffs.map((tariff) => (
-                            <option key={tariff.id} value={tariff.id}>
-                              {tariff.name} · {formatMoney(tariff.price)}/
-                              {tariffUnitLabels[tariff.unit]}
+                          <option value="" disabled>
+                            Единица…
+                          </option>
+                          {(Object.keys(tariffUnitLabels) as TariffUnit[]).map((unit) => (
+                            <option key={unit} value={unit}>
+                              {tariffUnitLabels[unit]}
                             </option>
                           ))}
                         </select>
@@ -363,16 +422,14 @@ export function RentalNewPage() {
                         min={0}
                         value={row.rate}
                         onChange={(event) => updateRow(row.key, { rate: event.target.value })}
-                        className="input w-24 shrink-0"
+                        className="input w-28 shrink-0"
                         placeholder="₽"
-                        title={`Цена, ₽/${tariffUnitLabels[row.tariffUnit]} (обязательно)`}
+                        title={`Цена, ₽/${unitLabel} (обязательно)`}
                       />
-                      <span className="w-12 shrink-0 text-xs text-zinc-500">
-                        ₽/{tariffUnitLabels[row.tariffUnit]}
-                      </span>
+                      <span className="w-16 shrink-0 text-xs text-zinc-500">₽/{unitLabel}</span>
                       <button
                         type="button"
-                        title="Убрать позицию (вместе с АКБ комплекта)"
+                        title="Убрать позицию (вместе с комплектом)"
                         onClick={() => setRows((prev) => prev.filter((r) => r.key !== row.key))}
                         className="shrink-0 rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
                       >
@@ -380,7 +437,7 @@ export function RentalNewPage() {
                       </button>
                     </div>
 
-                    {/* Дочерние АКБ комплекта — уходят вместе с велосипедом */}
+                    {/* Дочерний комплект (АКБ/зарядник) — едет с велосипедом за 0 ₽, тарифов нет */}
                     {row.children.length > 0 && (
                       <ul className="mt-2 space-y-1.5">
                         {row.children.map((child) => (
@@ -391,24 +448,9 @@ export function RentalNewPage() {
                                 {child.inventoryNumber}
                               </span>
                             </span>
-                            <input
-                              type="number"
-                              min={0}
-                              value={child.rate}
-                              onChange={(event) =>
-                                updateRow(row.key, {
-                                  children: row.children.map((c) =>
-                                    c.assetId === child.assetId
-                                      ? { ...c, rate: event.target.value }
-                                      : c,
-                                  ),
-                                })
-                              }
-                              className="input w-24 shrink-0"
-                              placeholder="0"
-                              title="Тариф доп. АКБ, ₽/час"
-                            />
-                            <span className="w-12 shrink-0 text-xs text-zinc-500">₽/час</span>
+                            <span className="text-xs text-zinc-600">
+                              {assetTypeLabels[child.type]}, в комплекте — 0 ₽
+                            </span>
                           </li>
                         ))}
                       </ul>

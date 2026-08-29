@@ -29,6 +29,7 @@ const statusFilterLabels: [StatusFilter, string][] = [
   ['all', 'Все'],
   ['available', 'Доступен'],
   ['mounted', 'На технике'],
+  ['reserved', 'В резерве'],
   ['rented', 'В аренде'],
   ['maintenance', 'Обслуживание'],
   ['sold', 'Продан'],
@@ -295,26 +296,36 @@ function AssetModal({
 
   useEffect(() => {
     if (!state.open || !canBundle) return
-    api<Asset[]>('/assets?type=bike')
-      .then((list) =>
-        setBikes(list.filter((b) => b.status === 'available' || b.status === 'maintenance')),
-      )
+    // В список — только велосипеды без смонтированного компонента этого типа:
+    // на велосипеде строго 1 АКБ и 1 зарядник (бэк тоже отвечает 409 при повторном монтаже)
+    Promise.all([api<Asset[]>('/assets?type=bike'), api<Asset[]>(`/assets?type=${type}`)])
+      .then(([bikeList, components]) => {
+        const occupied = new Set(
+          components.map((a) => a.bikeId).filter((id): id is string => id != null),
+        )
+        setBikes(
+          bikeList.filter(
+            (b) =>
+              (b.status === 'available' || b.status === 'maintenance') && !occupied.has(b.id),
+          ),
+        )
+      })
       .catch(() => setBikes([]))
-  }, [state.open, canBundle])
+  }, [state.open, canBundle, type])
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault()
     if (!inventoryNumber.trim()) return
 
-    // Покупка обязательна при создании: цена >= 0 (0 — «в комплекте», без счёта);
-    // при цене > 0 счёт списания обязателен (иначе 409).
+    // Покупка обязательна при создании: дата и цена > 0, счёт списания обязателен (иначе 409).
     // «В комплекте с велосипедом» — цена принудительно 0, велосипед обязателен.
     if (bundled) {
       if (!bundledBikeId) return
     } else {
       const price = Number(purchasePrice)
-      if (!purchasePrice.trim() || Number.isNaN(price) || price < 0) return
-      if (price > 0 && !purchaseAccountId) return
+      if (!purchasedAt) return
+      if (!purchasePrice.trim() || Number.isNaN(price) || price <= 0) return
+      if (!purchaseAccountId) return
     }
 
     const common: Record<string, unknown> = {
@@ -325,11 +336,9 @@ function AssetModal({
       ...(purchasedAt ? { purchasedAt: dateInputToIso(purchasedAt) } : {}),
       ...(bundled
         ? { purchasePrice: 0, bundledBikeId }
-        : purchasePrice.trim()
-          ? { purchasePrice: Number(purchasePrice) }
-          : {}),
+        : { purchasePrice: Number(purchasePrice) }),
     }
-    if (!bundled && Number(purchasePrice) > 0) {
+    if (!bundled) {
       common.purchaseAccountId = purchaseAccountId
     }
 
@@ -566,8 +575,9 @@ function AssetModal({
         {!(canBundle && bundled) && (
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="mb-1.5 block text-sm text-zinc-400">Дата покупки</label>
+            <label className="mb-1.5 block text-sm text-zinc-400">Дата покупки *</label>
             <input
+              required
               type="date"
               value={purchasedAt}
               onChange={(event) => setPurchasedAt(event.target.value)}
@@ -581,18 +591,17 @@ function AssetModal({
             <input
               required
               type="number"
-              min={0}
+              min={1}
               value={purchasePrice}
               onChange={(event) => setPurchasePrice(event.target.value)}
               className="input"
-              placeholder="0 — в комплекте"
             />
           </div>
         </div>
         )}
 
-        {/* Списание за покупку — только при цене > 0 */}
-        {!bundled && Number(purchasePrice) > 0 && (
+        {/* Списание за покупку — обязательно при покупке отдельно (цена всегда > 0) */}
+        {!bundled && (
           <div>
             <label className="mb-1.5 block text-sm text-zinc-400">Списать со счёта *</label>
             <select

@@ -12,6 +12,8 @@ export const AssetStatus = {
   Available: 'available',
   /** АКБ/зарядник смонтированы на велосипеде */
   Mounted: 'mounted',
+  /** Зарезервирован под аренду-черновик */
+  Reserved: 'reserved',
   Rented: 'rented',
   Maintenance: 'maintenance',
   Sold: 'sold',
@@ -111,12 +113,17 @@ export interface SimCard {
   note: string
   /** Трекер, в который вставлена; null — свободна */
   trackerId: string | null
+  /** Трекер, с которым шла в комплекте; null — куплена отдельно */
+  bundledTrackerId: string | null
+  bundledTrackerName: string | null
   /** Дата покупки, ISO */
   purchasedAt: string | null
   /** Цена покупки, ₽; 0 — «в комплекте» */
   purchasePrice: number | null
   status: 'active' | 'written_off'
   writeOffReason: WriteOffReason | null
+  /** Комментарий списания (в т.ч. каскадного — вместе с трекером) */
+  writeOffComment: string | null
 }
 
 export const GpsTrackerStatus = {
@@ -237,9 +244,13 @@ export interface Customer {
 }
 
 export const RentalStatus = {
+  /** Черновик: создана, активы в резерве, выдачи не было */
+  Draft: 'draft',
   Active: 'active',
   Overdue: 'overdue',
   Completed: 'completed',
+  /** Завершена досрочным возвратом (раньше конца оплаченного периода) */
+  CompletedEarly: 'completed_early',
   Cancelled: 'cancelled',
 } as const
 export type RentalStatus = (typeof RentalStatus)[keyof typeof RentalStatus]
@@ -265,6 +276,20 @@ export interface RentalItem {
   parentItemId: string | null
 }
 
+/** Продление аренды: на сколько и как сдвинулся конец периода */
+export interface RentalExtension {
+  id: string
+  duration: number
+  durationUnit: TariffUnit
+  /** Конец периода до продления, ISO */
+  fromEndAt: string
+  /** Конец периода после продления, ISO */
+  toEndAt: string
+  /** ISO-строка создания */
+  createdAt: string
+  createdByName: string | null
+}
+
 export interface Rental {
   id: string
   customerId: string
@@ -284,7 +309,11 @@ export interface Rental {
   amount: number
   /** Оплачено, ₽ */
   paidAmount: number
+  /** Возвращено клиенту (расходные операции по аренде) — блок «Возвраты» */
+  refundedAmount: number
   items: RentalItem[]
+  /** Продления аренды (хронологически) */
+  extensions: RentalExtension[]
   /** ISO-строка создания */
   createdAt: string
 }
@@ -307,11 +336,41 @@ export interface Account {
 }
 
 /** Облегчённый счёт для селектов (id + название, без остатка) — /finance/accounts/options */
+/** Типы событий аренды (лента в карточке) */
+export const RentalEventType = {
+  Created: 'created',
+  Payment: 'payment',
+  Issued: 'issued',
+  Extension: 'extension',
+  ItemReturn: 'item_return',
+  Refund: 'refund',
+  Completed: 'completed',
+  Cancelled: 'cancelled',
+} as const
+export type RentalEventType = (typeof RentalEventType)[keyof typeof RentalEventType]
+
+/** Событие из истории аренды */
+export interface RentalEvent {
+  id: string
+  type: RentalEventType
+  /** ISO-строка */
+  date: string
+  comment: string
+  /** Сумма операции, ₽; null если событие без денег */
+  amount: number | null
+  transactionId: string | null
+  /** Продление: на сколько и как сдвинулся конец периода */
+  duration: number | null
+  durationUnit: TariffUnit | null
+  fromEndAt: string | null
+  toEndAt: string | null
+  createdByName: string | null
+}
+
 export interface AccountOption {
   id: string
   name: string
 }
-
 export const CategoryKind = {
   Income: 'income',
   Expense: 'expense',

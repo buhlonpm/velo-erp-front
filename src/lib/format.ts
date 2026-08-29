@@ -70,3 +70,65 @@ export function formatOverdue(plannedEndAt: string): string {
   if (rest === 0) return `${days} дн.`
   return `${days} дн. ${rest} ч.`
 }
+
+/** Русские формы для единиц срока: [1, 2-4, 5+] */
+const DURATION_FORMS = {
+  hour: ['час', 'часа', 'часов'],
+  day: ['день', 'дня', 'дней'],
+  week: ['неделя', 'недели', 'недель'],
+  month: ['месяц', 'месяца', 'месяцев'],
+} as const
+
+function plural(n: number, forms: readonly [string, string, string]): string {
+  const mod100 = n % 100
+  if (mod100 >= 11 && mod100 <= 14) return forms[2]
+  const mod10 = n % 10
+  if (mod10 === 1) return forms[0]
+  if (mod10 >= 2 && mod10 <= 4) return forms[1]
+  return forms[2]
+}
+
+const DURATION_UNIT_SECONDS = { hour: 3600, day: 86400, week: 604800, month: 2592000 } as const
+type DurationUnit = keyof typeof DURATION_UNIT_SECONDS
+
+/**
+ * Длительность периода аренды в целых единицах: «3 дня», «2 недели».
+ * Единица — наибольшая, на которую срок делится без остатка; null, если дат нет/срок <= 0.
+ */
+export function splitDuration(
+  startAt: string | null | undefined,
+  plannedEndAt: string | null | undefined,
+): { value: number; unit: DurationUnit } | null {
+  if (!startAt || !plannedEndAt) return null
+  const seconds = Math.round(
+    (new Date(plannedEndAt).getTime() - new Date(startAt).getTime()) / 1000,
+  )
+  if (seconds <= 0) return null
+  for (const unit of ['month', 'week', 'day', 'hour'] as const) {
+    const unitSeconds = DURATION_UNIT_SECONDS[unit]
+    if (seconds % unitSeconds === 0) {
+      return { value: seconds / unitSeconds, unit }
+    }
+  }
+  return { value: Math.round((seconds / 3600) * 10) / 10, unit: 'hour' }
+}
+
+/** «3 дня» / «2 недели» по датам периода аренды */
+export function formatDuration(
+  startAt: string | null | undefined,
+  plannedEndAt: string | null | undefined,
+): string {
+  const duration = splitDuration(startAt, plannedEndAt)
+  if (!duration) return '—'
+  return `${duration.value} ${plural(duration.value, DURATION_FORMS[duration.unit])}`
+}
+
+/** «5 дней» / «1 неделя» по значению и единице срока */
+export function formatDurationValue(value: number, unit: DurationUnit): string {
+  return `${value} ${plural(value, DURATION_FORMS[unit])}`
+}
+
+/** Короткий лейбл единицы срока: «день» (для «₽/день») */
+export function durationUnitLabel(unit: DurationUnit): string {
+  return DURATION_FORMS[unit][0]
+}

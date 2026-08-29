@@ -1,32 +1,63 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, ClipboardList, Undo2, X } from 'lucide-react'
+import { ArrowLeft, Banknote, Check, CheckCircle2, ClipboardList, History, KeyRound, Pencil, Trash2, Undo2, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
-import type { Rental, RentalItem } from '../types'
+import { useAuth } from '../auth/AuthContext'
+import { hasPermission, PERMISSIONS } from '../auth/permissions'
+import type { AccountOption, Customer, Rental, RentalEvent, RentalExtension, RentalItem, TariffUnit, Transaction } from '../types'
 import { EmptyState } from '../components/EmptyState'
+import { Modal } from '../components/Modal'
 import { StatusBadge } from '../components/StatusBadge'
-import { formatDateTime, formatMoney, formatOverdue } from '../lib/format'
+import { durationUnitLabel, formatDateTime, formatDuration, formatDurationValue, formatMoney, formatOverdue, splitDuration } from '../lib/format'
 import {
   assetTypeLabels,
+  rentalEventTypeLabels,
   rentalKindLabels,
   rentalStatusLabels,
   rentalStatusTones,
   tariffUnitLabels,
 } from '../lib/labels'
 
+/** Значение для input datetime-local из Date (в локальной TZ) */
+function toLocalInputValue(date: Date): string {
+  const offset = date.getTimezoneOffset() * 60_000
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16)
+}
+
 export function RentalDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const canViewFinance = hasPermission(user, PERMISSIONS.FINANCE_VIEW)
   const [rental, setRental] = useState<Rental | null>(null)
+  const [events, setEvents] = useState<RentalEvent[]>([])
+  const [accounts, setAccounts] = useState<AccountOption[]>([])
+  const [customerPhone, setCustomerPhone] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // Модалки: приём оплаты, история оплат, история возвратов, выдача (черновик),
+  // завершение (активная), досрочный возврат с рефандом, продление
+  const [paymentOpen, setPaymentOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [refundHistoryOpen, setRefundHistoryOpen] = useState(false)
+  const [issueOpen, setIssueOpen] = useState(false)
+  const [completeOpen, setCompleteOpen] = useState(false)
+  const [earlyReturnOpen, setEarlyReturnOpen] = useState(false)
+  const [extendOpen, setExtendOpen] = useState(false)
+  const [editExtension, setEditExtension] = useState<RentalExtension | null>(null)
 
   const showError = (err: unknown, fallback: string) =>
     setError(err instanceof ApiError ? err.message : fallback)
 
   const loadRental = useCallback(async () => {
     try {
-      setRental(await api<Rental>(`/rentals/${id}`))
+      const [rentalData, eventList] = await Promise.all([
+        api<Rental>(`/rentals/${id}`),
+        api<RentalEvent[]>(`/rentals/${id}/events`),
+      ])
+      setRental(rentalData)
+      setEvents(eventList)
       setError('')
     } catch (err) {
       showError(err, 'Не удалось загрузить аренду')
@@ -37,25 +68,39 @@ export function RentalDetailPage() {
 
   useEffect(() => {
     void loadRental()
+    api<AccountOption[]>('/finance/accounts/options')
+      .then(setAccounts)
+      .catch(() => setAccounts([]))
   }, [loadRental])
 
-  const returnItem = async (itemId: string) => {
-    try {
-      await api(`/rentals/${id}/items/${itemId}/return`, { method: 'POST' })
-      await loadRental()
-    } catch (err) {
-      showError(err, 'Не удалось вернуть позицию')
-    }
-  }
+  // Телефон клиента для инфоблока (в Rental его нет — догружаем карточку клиента)
+  useEffect(() => {
+    if (!rental) return
+    api<Customer>(`/customers/${rental.customerId}`)
+      .then((customer) => setCustomerPhone(customer.phone))
+      .catch(() => setCustomerPhone(''))
+  }, [rental])
 
   const cancelRental = async () => {
     if (!rental) return
-    if (!window.confirm(`Отменить аренду клиента ${rental.customerName}?`)) return
+    if (!window.confirm(`Отменить черновик аренды клиента ${rental.customerName}? Активы освободятся из резерва.`))
+      return
     try {
       await api(`/rentals/${rental.id}/cancel`, { method: 'POST' })
       await loadRental()
     } catch (err) {
       showError(err, 'Не удалось отменить аренду')
+    }
+  }
+
+  const deleteExtension = async (extension: RentalExtension) => {
+    if (!rental) return
+    if (!window.confirm('Удалить продление? Срок аренды пересчитается.')) return
+    try {
+      await api(`/rentals/${rental.id}/extensions/${extension.id}`, { method: 'DELETE' })
+      await loadRental()
+    } catch (err) {
+      showError(err, 'Не удалось удалить продление')
     }
   }
 
@@ -85,11 +130,21 @@ export function RentalDetailPage() {
     )
   }
 
+  const isDraft = rental.status === 'draft'
   const isActive = rental.status === 'active' || rental.status === 'overdue'
-  // Группировка комплекта: верхнеуровневые позиции + их дочерние АКБ
+  const canExtend = isActive && rental.kind === 'rent' && rental.plannedEndAt != null
+  const remaining = Math.max(0, rental.amount - rental.paidAmount)
+  // Возвращено клиенту — из ответа аренды (refundedAmount), отдельно от оплат
+  const refundTotal = rental.refundedAmount
+  // Группировка комплекта: верхнеуровневые позиции + их дочерние АКБ/зарядники
   const topLevelItems = rental.items.filter((item) => !item.parentItemId)
   const childrenOf = (parentId: string): RentalItem[] =>
     rental.items.filter((item) => item.parentItemId === parentId)
+  // Срок и тариф из заявки (rent): длительность периода и сумма цен позиций за единицу срока
+  const duration = splitDuration(rental.startAt, rental.plannedEndAt)
+  const rateSum = topLevelItems.reduce((sum, item) => sum + item.rate, 0)
+  // Продления аренды (?? [] — на случай старого бэка без поля в ответе)
+  const extensions = rental.extensions ?? []
 
   return (
     <div className="space-y-6">
@@ -120,45 +175,146 @@ export function RentalDetailPage() {
       {rental.status === 'overdue' && (
         <p className="rounded-lg border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm font-medium text-red-400">
           Аренда просрочена
-          {rental.plannedEndAt ? ` на ${formatOverdue(rental.plannedEndAt)}` : ''} — свяжитесь с
-          клиентом
+          {rental.plannedEndAt ? ` на ${formatOverdue(rental.plannedEndAt)}` : ''} — продлите её
+          или свяжитесь с клиентом
         </p>
+      )}
+
+      {/* Оплата — сводка всегда; приём платежей — пока аренда не закрыта и есть остаток */}
+      <section className="panel border-emerald-400/20 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-8">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Сумма аренды</p>
+              <p className="mt-0.5 text-xl font-semibold text-zinc-100">
+                {formatMoney(rental.amount)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Оплачено</p>
+              <p className="mt-0.5 text-xl font-semibold text-emerald-400">
+                {formatMoney(rental.paidAmount)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Остаток</p>
+              <p
+                className={`mt-0.5 text-xl font-semibold ${
+                  remaining > 0 ? 'text-amber-400' : 'text-zinc-500'
+                }`}
+              >
+                {formatMoney(remaining)}
+              </p>
+            </div>
+            {rental.refundedAmount > 0 && (
+              <div>
+                <p className="text-xs uppercase tracking-wide text-zinc-500">Возвращено</p>
+                <p className="mt-0.5 text-xl font-semibold text-red-400">
+                  {formatMoney(rental.refundedAmount)}
+                </p>
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {canViewFinance && (
+              <button
+                type="button"
+                onClick={() => setHistoryOpen(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-zinc-400 transition hover:border-emerald-400/40 hover:text-emerald-400"
+              >
+                <History size={16} />
+                История оплат
+              </button>
+            )}
+            {(isDraft || isActive) &&
+              (remaining > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setPaymentOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-sm font-medium text-emerald-400 transition hover:bg-emerald-400/20"
+                >
+                  <Banknote size={16} />
+                  Принять оплату
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-2 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-sm font-medium text-emerald-400">
+                  <CheckCircle2 size={16} />
+                  Оплачено полностью
+                </span>
+              ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Возвраты — расходные операции по аренде; виден только с правом finance:view */}
+      {canViewFinance && rental.refundedAmount > 0 && (
+        <section className="panel border-red-400/20 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Возвраты</p>
+              <p className="mt-0.5 text-xl font-semibold text-red-400">
+                {formatMoney(refundTotal)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRefundHistoryOpen(true)}
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-zinc-400 transition hover:border-red-400/40 hover:text-red-400"
+            >
+              <History size={16} />
+              История возвратов
+            </button>
+          </div>
+        </section>
       )}
 
       {/* Информация */}
       <section className="panel p-5">
         <dl className="grid grid-cols-1 gap-x-8 gap-y-2 text-sm sm:grid-cols-2">
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Клиент</dt>
-            <dd className="text-zinc-300">{rental.customerName}</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Начало</dt>
-            <dd className="text-zinc-300">{formatDateTime(rental.startAt)}</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">План. окончание</dt>
-            <dd className="text-zinc-300">
-              {rental.plannedEndAt ? formatDateTime(rental.plannedEndAt) : '—'}
-            </dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Залог</dt>
-            <dd className="text-zinc-300">{formatMoney(rental.deposit)}</dd>
-          </div>
-          {rental.buyoutPrice != null && (
+          <div className="space-y-2">
             <div className="flex justify-between gap-4">
-              <dt className="text-zinc-500">Цена выкупа</dt>
-              <dd className="text-zinc-300">{formatMoney(rental.buyoutPrice)}</dd>
+              <dt className="text-zinc-500">Клиент</dt>
+              <dd className="text-right text-zinc-300">
+                {rental.customerName}
+                {customerPhone && (
+                  <span className="block text-xs text-zinc-500">{customerPhone}</span>
+                )}
+              </dd>
             </div>
-          )}
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Сумма</dt>
-            <dd className="text-zinc-300">{formatMoney(rental.amount)}</dd>
+            <div className="flex justify-between gap-4">
+              <dt className="text-zinc-500">{isDraft ? 'Начало периода (план)' : 'Начало периода'}</dt>
+              <dd className="text-zinc-300">{formatDateTime(rental.startAt)}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="text-zinc-500">Конец периода</dt>
+              <dd className="text-zinc-300">
+                {rental.plannedEndAt ? formatDateTime(rental.plannedEndAt) : '—'}
+              </dd>
+            </div>
           </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Оплачено</dt>
-            <dd className="text-zinc-300">{formatMoney(rental.paidAmount)}</dd>
+          <div className="space-y-2">
+            {rental.kind === 'rent' && duration && (
+              <>
+                <div className="flex justify-between gap-4">
+                  <dt className="text-zinc-500">Срок</dt>
+                  <dd className="text-zinc-300">
+                    {formatDuration(rental.startAt, rental.plannedEndAt)}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <dt className="text-zinc-500">Тариф</dt>
+                  <dd className="text-zinc-300">
+                    {formatMoney(rateSum)}/{durationUnitLabel(duration.unit)}
+                  </dd>
+                </div>
+              </>
+            )}
+            {rental.buyoutPrice != null && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-zinc-500">Цена выкупа</dt>
+                <dd className="text-zinc-300">{formatMoney(rental.buyoutPrice)}</dd>
+              </div>
+            )}
           </div>
           {rental.comment && (
             <div className="flex justify-between gap-4 sm:col-span-2">
@@ -185,7 +341,6 @@ export function RentalDetailPage() {
                   <th className="th">Тип</th>
                   <th className="th text-right">Тариф</th>
                   <th className="th">Возврат</th>
-                  {isActive && <th className="th" />}
                 </tr>
               </thead>
               <tbody>
@@ -195,8 +350,6 @@ export function RentalDetailPage() {
                     item={item}
                     childrenItems={childrenOf(item.id)}
                     zebra={index % 2 === 1}
-                    isActive={isActive}
-                    onReturn={returnItem}
                   />
                 ))}
               </tbody>
@@ -205,17 +358,893 @@ export function RentalDetailPage() {
         )}
       </section>
 
-      {isActive && (
-        <button
-          type="button"
-          onClick={cancelRental}
-          className="inline-flex items-center gap-2 rounded-lg border border-red-400/20 bg-red-400/10 px-4 py-2 text-sm font-medium text-red-400 transition hover:bg-red-400/20"
-        >
-          <X size={16} />
-          Отменить аренду
-        </button>
+      {/* Действия по статусу */}
+      {(isDraft || isActive) && (
+        <div className="flex flex-wrap items-center gap-3">
+          {isDraft && (
+            <>
+              <button
+                type="button"
+                onClick={() => setIssueOpen(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-sm font-medium text-emerald-400 transition hover:bg-emerald-400/20"
+              >
+                <KeyRound size={16} />
+                Выдать аренду
+              </button>
+              <button
+                type="button"
+                onClick={cancelRental}
+                className="inline-flex items-center gap-2 rounded-lg border border-red-400/20 bg-red-400/10 px-4 py-2 text-sm font-medium text-red-400 transition hover:bg-red-400/20"
+              >
+                <X size={16} />
+                Отменить аренду
+              </button>
+            </>
+          )}
+          {isActive && (
+            <>
+              {/* Завершение — только после полной оплаты (бэк тоже проверяет, 409) */}
+              <button
+                type="button"
+                onClick={() => setCompleteOpen(true)}
+                disabled={remaining > 0}
+                title={remaining > 0 ? `Не оплачено полностью — остаток ${formatMoney(remaining)}` : undefined}
+                className="btn-primary disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <CheckCircle2 size={16} />
+                Завершить аренду
+              </button>
+              {canExtend && (
+                <button
+                  type="button"
+                  onClick={() => setExtendOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-sky-400/20 bg-sky-400/10 px-4 py-2 text-sm font-medium text-sky-400 transition hover:bg-sky-400/20"
+                >
+                  Продлить аренду
+                </button>
+              )}
+              {remaining > 0 ? (
+                <span className="text-xs text-zinc-600" title={`Остаток ${formatMoney(remaining)}`}>
+                  Завершение и возврат — после полной оплаты
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setEarlyReturnOpen(true)}
+                  className="text-xs text-zinc-500 underline transition hover:text-zinc-300"
+                >
+                  Вернуть досрочно
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Продления — история сдвигов конца периода, новые сверху; у active-аренды правка/удаление */}
+      {extensions.length > 0 && (
+        <section className="panel p-5">
+          <h2 className="mb-3 font-semibold text-zinc-100">
+            Продления <span className="text-sm font-normal text-zinc-500">· {extensions.length}</span>
+          </h2>
+          <ul>
+            {[...extensions].reverse().map((extension) => (
+              <li
+                key={extension.id}
+                className="flex items-center justify-between gap-4 border-b border-white/5 py-2 text-sm last:border-0"
+              >
+                <div>
+                  <span className="text-zinc-300">
+                    +{formatDurationValue(extension.duration, extension.durationUnit)}
+                  </span>
+                  {extension.createdByName && (
+                    <span className="text-zinc-600"> · {extension.createdByName}</span>
+                  )}
+                  <span className="block text-xs text-zinc-600">
+                    с {formatDateTime(extension.fromEndAt)} → по {formatDateTime(extension.toEndAt)}
+                  </span>
+                </div>
+                {isActive && (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditExtension(extension)}
+                      title="Изменить продление"
+                      className="rounded-lg p-2 text-zinc-500 transition hover:bg-sky-400/10 hover:text-sky-400"
+                    >
+                      <Pencil size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void deleteExtension(extension)}
+                      title="Удалить продление"
+                      className="rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* История аренды: создание, оплаты, выдача, продления, возвраты денег, завершение */}
+      <section className="panel p-5">
+        <h2 className="mb-3 flex items-center gap-2 font-semibold text-zinc-100">
+          <History size={16} className="text-zinc-500" />
+          История
+        </h2>
+        {events.length === 0 ? (
+          <p className="text-sm text-zinc-500">Событий пока нет</p>
+        ) : (
+          <ul>
+            {events.map((event) => (
+              <li
+                key={event.id}
+                className="flex items-baseline justify-between gap-4 border-b border-white/5 py-2 text-sm last:border-0"
+              >
+                <div>
+                  <span className="text-zinc-300">{rentalEventTypeLabels[event.type]}</span>
+                  {event.comment && <span className="text-zinc-500"> — {event.comment}</span>}
+                  {event.amount != null && event.amount > 0 && (
+                    <span className="text-zinc-400"> · {formatMoney(event.amount)}</span>
+                  )}
+                  {event.createdByName && (
+                    <span className="text-zinc-600"> · {event.createdByName}</span>
+                  )}
+                  {event.type === 'extension' && event.fromEndAt && event.toEndAt && (
+                    <span className="block text-xs text-zinc-600">
+                      Конец периода: {formatDateTime(event.fromEndAt)} →{' '}
+                      {formatDateTime(event.toEndAt)}
+                    </span>
+                  )}
+                </div>
+                <span className="shrink-0 text-xs text-zinc-500">{formatDateTime(event.date)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Приём оплаты: сумма (по умолчанию остаток), дата, счёт */}
+      {paymentOpen && (
+        <PaymentModal
+          remaining={remaining}
+          accounts={accounts}
+          onClose={() => setPaymentOpen(false)}
+          onSubmit={async (amount, date, accountId) => {
+            await api(`/rentals/${id}/payments`, {
+              method: 'POST',
+              body: JSON.stringify({
+                amount: Number(amount),
+                accountId,
+                ...(date ? { date: new Date(date).toISOString() } : {}),
+              }),
+            })
+            setPaymentOpen(false)
+            await loadRental()
+          }}
+        />
+      )}
+
+      {/* История оплат: правка даты/суммы и удаление платежей (нужно право finance:view) */}
+      {historyOpen && (
+        <PaymentHistoryModal
+          rentalId={rental.id}
+          accounts={accounts}
+          kind="income"
+          onClose={() => setHistoryOpen(false)}
+          onChanged={loadRental}
+        />
+      )}
+
+      {/* История возвратов: правка даты/суммы и удаление возвратов (нужно право finance:view) */}
+      {refundHistoryOpen && (
+        <PaymentHistoryModal
+          rentalId={rental.id}
+          accounts={accounts}
+          kind="expense"
+          onClose={() => setRefundHistoryOpen(false)}
+          onChanged={loadRental}
+        />
+      )}
+
+      {/* Выдача черновика: дата фактической выдачи (период считается от неё) */}
+      {issueOpen && (
+        <IssueModal
+          remaining={remaining}
+          initialDate={toLocalInputValue(new Date(rental.startAt))}
+          onClose={() => setIssueOpen(false)}
+          onSubmit={async (date) => {
+            await api(`/rentals/${id}/issue`, {
+              method: 'POST',
+              body: JSON.stringify(date ? { date: new Date(date).toISOString() } : {}),
+            })
+            setIssueOpen(false)
+            await loadRental()
+          }}
+        />
+      )}
+
+      {/* Завершение аренды (обычный путь): дата приёма, без денежных полей */}
+      {completeOpen && (
+        <CompleteModal
+          plannedEndAt={rental.plannedEndAt}
+          onClose={() => setCompleteOpen(false)}
+          onSubmit={async (date) => {
+            await api(`/rentals/${id}/complete`, {
+              method: 'POST',
+              body: JSON.stringify({ date: new Date(date).toISOString() }),
+            })
+            setCompleteOpen(false)
+            await loadRental()
+          }}
+        />
+      )}
+
+      {/* Досрочный возврат: все позиции возвращаются; опционально — возврат денег клиенту */}
+      {earlyReturnOpen && (
+        <EarlyReturnModal
+          accounts={accounts}
+          onClose={() => setEarlyReturnOpen(false)}
+          onSubmit={async (refundAmount, refundAccountId, date) => {
+            const body = {
+              date: new Date(date).toISOString(),
+              ...(Number(refundAmount) > 0
+                ? { refundAmount: Number(refundAmount), refundAccountId }
+                : {}),
+            }
+            await api(`/rentals/${id}/early-return`, {
+              method: 'POST',
+              body: JSON.stringify(body),
+            })
+            setEarlyReturnOpen(false)
+            await loadRental()
+          }}
+        />
+      )}
+
+      {/* Продление: только срок; оплата принимается отдельно через блок оплаты */}
+      {extendOpen && rental && (
+        <ExtendModal
+          onClose={() => setExtendOpen(false)}
+          onSubmit={async (duration, durationUnit) => {
+            await api(`/rentals/${id}/extend`, {
+              method: 'POST',
+              body: JSON.stringify({
+                duration: Number(duration),
+                durationUnit,
+              }),
+            })
+            setExtendOpen(false)
+            await loadRental()
+          }}
+        />
+      )}
+
+      {/* Правка продления: срок пересчитается на бэке */}
+      {editExtension && (
+        <ExtendModal
+          title="Изменить продление"
+          submitLabel="Сохранить"
+          initialDuration={String(editExtension.duration)}
+          initialUnit={editExtension.durationUnit}
+          onClose={() => setEditExtension(null)}
+          onSubmit={async (duration, durationUnit) => {
+            await api(`/rentals/${id}/extensions/${editExtension.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({
+                duration: Number(duration),
+                durationUnit,
+              }),
+            })
+            setEditExtension(null)
+            await loadRental()
+          }}
+        />
       )}
     </div>
+  )
+}
+
+/**
+ * История оплат/возвратов аренды: операции с rental_id нужного kind. Дату и сумму можно
+ * поправить, операцию — удалить (если была ошибка). Баланс счёта пересчитывать не нужно —
+ * он вычисляемый.
+ */
+function PaymentHistoryModal({
+  rentalId,
+  accounts,
+  kind,
+  onClose,
+  onChanged,
+}: {
+  rentalId: string
+  accounts: AccountOption[]
+  /** income — оплаты клиента, expense — возвраты денег клиенту */
+  kind: 'income' | 'expense'
+  onClose: () => void
+  onChanged: () => Promise<void>
+}) {
+  const [payments, setPayments] = useState<Transaction[] | null>(null)
+  const [error, setError] = useState('')
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  const isExpense = kind === 'expense'
+  const title = isExpense ? 'История возвратов' : 'История оплат'
+  const noun = isExpense ? 'возврат' : 'оплату'
+
+  const accountName = (accountId: string) =>
+    accounts.find((account) => account.id === accountId)?.name ?? '—'
+
+  const load = useCallback(async () => {
+    try {
+      setPayments(await api<Transaction[]>(`/finance/transactions?rentalId=${rentalId}&kind=${kind}`))
+      setError('')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : `Не удалось загрузить: ${title.toLowerCase()}`)
+    }
+  }, [rentalId, kind, title])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const savePayment = async (payment: Transaction, amount: string, date: string) => {
+    setBusyId(payment.id)
+    setError('')
+    try {
+      await api(`/finance/transactions/${payment.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          amount: Number(amount),
+          ...(date ? { date: new Date(date).toISOString() } : {}),
+        }),
+      })
+      await load()
+      await onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : `Не удалось сохранить ${noun}`)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const deletePayment = async (payment: Transaction) => {
+    if (!window.confirm(`Удалить ${noun} ${formatMoney(payment.amount)}?`)) return
+    setBusyId(payment.id)
+    setError('')
+    try {
+      await api(`/finance/transactions/${payment.id}`, { method: 'DELETE' })
+      await load()
+      await onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : `Не удалось удалить ${noun}`)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  return (
+    <Modal open title={title} onClose={onClose}>
+      <div className="space-y-3">
+        {error && (
+          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+        {payments === null ? (
+          <p className="text-sm text-zinc-500">Загрузка…</p>
+        ) : payments.length === 0 ? (
+          <p className="text-sm text-zinc-500">
+            {isExpense ? 'Возвратов пока нет' : 'Оплат пока нет'}
+          </p>
+        ) : (
+          payments.map((payment) => (
+            <PaymentRow
+              key={payment.id}
+              payment={payment}
+              accountName={accountName(payment.accountId)}
+              busy={busyId === payment.id}
+              onSave={savePayment}
+              onDelete={deletePayment}
+            />
+          ))
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+/** Строка оплаты с инлайн-редактированием суммы и даты */
+function PaymentRow({
+  payment,
+  accountName,
+  busy,
+  onSave,
+  onDelete,
+}: {
+  payment: Transaction
+  accountName: string
+  busy: boolean
+  onSave: (payment: Transaction, amount: string, date: string) => Promise<void>
+  onDelete: (payment: Transaction) => Promise<void>
+}) {
+  const [amount, setAmount] = useState(String(payment.amount))
+  const [date, setDate] = useState(() => toLocalInputValue(new Date(payment.date)))
+  const dirty = amount !== String(payment.amount) || date !== toLocalInputValue(new Date(payment.date))
+
+  return (
+    <div className="rounded-lg border border-white/10 p-3">
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          min={1}
+          value={amount}
+          onChange={(event) => setAmount(event.target.value)}
+          className="input w-28 shrink-0"
+          title="Сумма, ₽"
+        />
+        <input
+          type="datetime-local"
+          value={date}
+          onChange={(event) => setDate(event.target.value)}
+          className="input"
+          title="Дата оплаты"
+        />
+        {dirty && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void onSave(payment, amount, date)}
+            title="Сохранить"
+            className="shrink-0 rounded-lg p-2 text-emerald-400 transition hover:bg-emerald-400/10"
+          >
+            <Check size={16} />
+          </button>
+        )}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void onDelete(payment)}
+          title="Удалить оплату"
+          className="shrink-0 rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
+        >
+          <Trash2 size={16} />
+        </button>
+      </div>
+      <p className="mt-1.5 pl-1 text-xs text-zinc-500">
+        {payment.kind === 'expense' ? 'Возврат клиенту' : 'Оплата'} · {accountName}
+        {payment.comment ? ` · ${payment.comment}` : ''}
+      </p>
+    </div>
+  )
+}
+
+/** Модалка приёма оплаты: сумма (по умолчанию — остаток), дата и счёт платежа. */
+function PaymentModal({
+  remaining,
+  accounts,
+  onClose,
+  onSubmit,
+}: {
+  remaining: number
+  accounts: AccountOption[]
+  onClose: () => void
+  onSubmit: (amount: string, date: string, accountId: string) => Promise<void>
+}) {
+  const [amount, setAmount] = useState(remaining > 0 ? String(remaining) : '')
+  const [date, setDate] = useState(() => toLocalInputValue(new Date()))
+  const [accountId, setAccountId] = useState('')
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!amount.trim() || Number(amount) <= 0) {
+      setError('Укажите сумму оплаты')
+      return
+    }
+    if (!accountId) {
+      setError('Укажите счёт приёма оплаты')
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      await onSubmit(amount, date, accountId)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось принять оплату')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal open title="Принять оплату" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error && (
+          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Сумма, ₽ *</label>
+          <input
+            type="number"
+            min={1}
+            required
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+            className="input"
+          />
+          {remaining > 0 && (
+            <p className="mt-1.5 text-xs text-zinc-500">
+              Остаток к оплате: {formatMoney(remaining)}
+            </p>
+          )}
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Дата оплаты</label>
+          <input
+            type="datetime-local"
+            value={date}
+            onChange={(event) => setDate(event.target.value)}
+            className="input"
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">На счёт *</label>
+          <select
+            required
+            value={accountId}
+            onChange={(event) => setAccountId(event.target.value)}
+            className="input"
+          >
+            <option value="" disabled>
+              Выберите счёт…
+            </option>
+            {accounts.map((account) => (
+              <option key={account.id} value={account.id}>
+                {account.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button type="submit" disabled={submitting} className="btn-primary w-full">
+          <Banknote size={16} />
+          Принять оплату
+        </button>
+      </form>
+    </Modal>
+  )
+}
+
+/** Модалка обычного завершения аренды: простое подтверждение без денежных полей. */
+function CompleteModal({
+  plannedEndAt,
+  onClose,
+  onSubmit,
+}: {
+  /** Конец оплаченного периода — дата приёма не дальше ±24 часов от него */
+  plannedEndAt: string | null
+  onClose: () => void
+  onSubmit: (date: string) => Promise<void>
+}) {
+  // По умолчанию — дата окончания периода из заявки (можно поправить в пределах ±24 ч)
+  const [date, setDate] = useState(
+    plannedEndAt ? toLocalInputValue(new Date(plannedEndAt)) : toLocalInputValue(new Date())
+  )
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  // ±24 часа от конца аренды — иначе не даём даже отправить запрос
+  const tooFar =
+    plannedEndAt != null &&
+    date !== '' &&
+    Math.abs(new Date(date).getTime() - new Date(plannedEndAt).getTime()) > 24 * 60 * 60 * 1000
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!date) {
+      setError('Укажите дату приёма')
+      return
+    }
+    if (tooFar) {
+      setError('Дата приёма отличается от даты окончания аренды больше чем на 24 часа')
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      await onSubmit(date)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось завершить аренду')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal open title="Завершить аренду" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error && (
+          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+        <p className="text-sm text-zinc-400">
+          Все позиции вернутся на склад, аренда завершится. Если нужно вернуть деньги клиенту —
+          закройте это окно и выберите «Вернуть досрочно».
+        </p>
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Дата приёма *</label>
+          <input
+            type="datetime-local"
+            required
+            value={date}
+            onChange={(event) => setDate(event.target.value)}
+            className="input"
+          />
+          <p className="mt-1.5 text-xs text-zinc-500">
+            Не дальше 24 часов от даты окончания аренды
+            {plannedEndAt ? ` (${formatDateTime(plannedEndAt)})` : ''}
+          </p>
+        </div>
+        <button type="submit" disabled={submitting || tooFar} className="btn-primary w-full">
+          <CheckCircle2 size={16} />
+          Завершить аренду
+        </button>
+      </form>
+    </Modal>
+  )
+}
+
+/** Модалка выдачи черновика: дата выдачи (по умолчанию — начало из заявки); можно с непогашенным остатком. */
+function IssueModal({
+  remaining,
+  initialDate,
+  onClose,
+  onSubmit,
+}: {
+  remaining: number
+  /** Дата начала аренды из заявки (datetime-local) */
+  initialDate: string
+  onClose: () => void
+  onSubmit: (date: string) => Promise<void>
+}) {
+  const [date, setDate] = useState(initialDate)
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setError('')
+    try {
+      await onSubmit(date)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось выдать аренду')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal open title="Выдать аренду" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error && (
+          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Дата выдачи</label>
+          <input
+            type="datetime-local"
+            value={date}
+            onChange={(event) => setDate(event.target.value)}
+            className="input"
+          />
+          <p className="mt-1.5 text-xs text-zinc-500">
+            Период аренды будет считаться от этой даты
+          </p>
+        </div>
+        {remaining > 0 && (
+          <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
+            Остаток к оплате: {formatMoney(remaining)} — можно выдать сейчас и принять оплату позже
+          </p>
+        )}
+        <button type="submit" disabled={submitting} className="btn-primary w-full">
+          <KeyRound size={16} />
+          Выдать
+        </button>
+      </form>
+    </Modal>
+  )
+}
+
+/** Модалка досрочного возврата: все позиции разом; дата приёма и опционально возврат денег клиенту. */
+function EarlyReturnModal({
+  accounts,
+  onClose,
+  onSubmit,
+}: {
+  accounts: AccountOption[]
+  onClose: () => void
+  onSubmit: (refundAmount: string, refundAccountId: string, date: string) => Promise<void>
+}) {
+  const [date, setDate] = useState(toLocalInputValue(new Date()))
+  const [refundAmount, setRefundAmount] = useState('')
+  const [refundAccountId, setRefundAccountId] = useState('')
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!date) {
+      setError('Укажите дату приёма')
+      return
+    }
+    if (Number(refundAmount) > 0 && !refundAccountId) {
+      setError('Укажите счёт, с которого вернуть деньги')
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      await onSubmit(refundAmount, refundAccountId, date)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось оформить возврат')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal open title="Вернуть досрочно" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error && (
+          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+        <p className="text-sm text-zinc-400">
+          Все позиции аренды (включая комплект) будут возвращены. Вернули раньше конца периода —
+          аренда закроется как «завершена досрочно».
+        </p>
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Дата приёма *</label>
+          <input
+            type="datetime-local"
+            required
+            value={date}
+            onChange={(event) => setDate(event.target.value)}
+            className="input"
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Вернуть клиенту, ₽</label>
+          <input
+            type="number"
+            min={0}
+            value={refundAmount}
+            onChange={(event) => setRefundAmount(event.target.value)}
+            className="input"
+            placeholder="0 — без возврата денег"
+          />
+        </div>
+        {Number(refundAmount) > 0 && (
+          <div>
+            <label className="mb-1.5 block text-sm text-zinc-400">Со счёта *</label>
+            <select
+              required
+              value={refundAccountId}
+              onChange={(event) => setRefundAccountId(event.target.value)}
+              className="input"
+            >
+              <option value="" disabled>
+                Выберите счёт…
+              </option>
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        <button type="submit" disabled={submitting} className="btn-primary w-full">
+          <Undo2 size={16} />
+          Вернуть досрочно
+        </button>
+      </form>
+    </Modal>
+  )
+}
+
+/**
+ * Модалка продления: новый конец = старый конец периода + duration × unit.
+ * Денежных полей нет — оплата принимается отдельно через блок оплаты.
+ * Используется и для правки существующего продления (title/submitLabel/initial*).
+ */
+function ExtendModal({
+  title = 'Продлить аренду',
+  submitLabel = 'Продлить',
+  initialDuration = '',
+  initialUnit = 'day',
+  onClose,
+  onSubmit,
+}: {
+  title?: string
+  submitLabel?: string
+  initialDuration?: string
+  initialUnit?: TariffUnit
+  onClose: () => void
+  onSubmit: (duration: string, durationUnit: TariffUnit) => Promise<void>
+}) {
+  const [duration, setDuration] = useState(initialDuration)
+  const [durationUnit, setDurationUnit] = useState<TariffUnit>(initialUnit)
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!duration.trim() || Number(duration) <= 0) {
+      setError('Укажите срок продления')
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      await onSubmit(duration, durationUnit)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить продление')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal open title={title} onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error && (
+          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Продлить на *</label>
+          <div className="flex gap-2">
+            <input
+              type="number"
+              min={1}
+              required
+              value={duration}
+              onChange={(event) => setDuration(event.target.value)}
+              className="input w-24 shrink-0"
+              placeholder="3"
+            />
+            <select
+              value={durationUnit}
+              onChange={(event) => setDurationUnit(event.target.value as TariffUnit)}
+              className="input"
+            >
+              {(Object.keys(tariffUnitLabels) as TariffUnit[]).map((unit) => (
+                <option key={unit} value={unit}>
+                  {tariffUnitLabels[unit]}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <button type="submit" disabled={submitting} className="btn-primary w-full">
+          {submitLabel}
+        </button>
+      </form>
+    </Modal>
   )
 }
 
@@ -223,34 +1252,17 @@ function ItemRows({
   item,
   childrenItems,
   zebra,
-  isActive,
-  onReturn,
 }: {
   item: RentalItem
   childrenItems: RentalItem[]
   zebra: boolean
-  isActive: boolean
-  onReturn: (itemId: string) => void
 }) {
   const rowClass = `transition hover:bg-white/5 ${zebra ? 'bg-white/[0.02]' : ''}`
   return (
     <>
-      <ItemRow
-        item={item}
-        rowClass={rowClass}
-        isActive={isActive}
-        onReturn={onReturn}
-        isParent={childrenItems.length > 0}
-      />
+      <ItemRow item={item} rowClass={rowClass} />
       {childrenItems.map((child) => (
-        <ItemRow
-          key={child.id}
-          item={child}
-          rowClass={rowClass}
-          isActive={isActive}
-          onReturn={onReturn}
-          isChild
-        />
+        <ItemRow key={child.id} item={child} rowClass={rowClass} isChild />
       ))}
     </>
   )
@@ -259,17 +1271,11 @@ function ItemRows({
 function ItemRow({
   item,
   rowClass,
-  isActive,
-  onReturn,
   isChild = false,
-  isParent = false,
 }: {
   item: RentalItem
   rowClass: string
-  isActive: boolean
-  onReturn: (itemId: string) => void
   isChild?: boolean
-  isParent?: boolean
 }) {
   return (
     <tr className={rowClass}>
@@ -287,21 +1293,6 @@ function ItemRow({
       <td className="td text-zinc-500">
         {item.returnedAt ? `Возвращён ${formatDateTime(item.returnedAt)}` : '—'}
       </td>
-      {isActive && (
-        <td className="td text-right">
-          {!item.returnedAt && (
-            <button
-              type="button"
-              onClick={() => onReturn(item.id)}
-              title={isParent ? 'Вернёт весь комплект (включая АКБ)' : undefined}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-xs font-medium text-emerald-400 transition hover:bg-emerald-400/20"
-            >
-              <Undo2 size={14} />
-              Вернуть
-            </button>
-          )}
-        </td>
-      )}
     </tr>
   )
 }

@@ -8,13 +8,15 @@ import { EmptyState } from '../components/EmptyState'
 import { formatDateTime, formatMoney } from '../lib/format'
 import { rentalKindLabels, rentalStatusLabels, rentalStatusTones } from '../lib/labels'
 
-type StatusFilter = 'all' | 'active' | 'overdue' | 'completed'
+type StatusFilter = 'all' | 'draft' | 'active' | 'overdue' | 'completed' | 'completed_early'
 
 const statusFilters: [StatusFilter, string][] = [
   ['all', 'Все'],
+  ['draft', 'Черновики'],
   ['active', 'Активные'],
   ['overdue', 'Просроченные'],
   ['completed', 'Завершённые'],
+  ['completed_early', 'Завершены досрочно'],
 ]
 
 /** Краткое описание состава аренды: «EV-001 + 2» (дочерние позиции не считаем) */

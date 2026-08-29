@@ -6,7 +6,7 @@ import type { AccountOption, BikeModel, Category, CategoryKind, GpsTracker, SimC
 import { Modal } from '../components/Modal'
 import { PhoneInput } from '../components/PhoneInput'
 import { EmptyState } from '../components/EmptyState'
-import { dateInputToIso, formatDate, formatMoney, formatNumber } from '../lib/format'
+import { dateInputToIso, formatDate, formatMoney, formatNumber, isoToDateInput } from '../lib/format'
 import { categoryKindLabels, tariffUnitLabels, writeOffReasonLabels } from '../lib/labels'
 import { UsersPage } from './UsersPage'
 
@@ -93,25 +93,36 @@ function SimCardsSettings() {
             phoneNumber: form.phoneNumber,
             operator: form.operator,
             ...(form.note ? { note: form.note } : {}),
+            // Покупка — только у отдельно купленной симки (у комплектной поля пустые);
+            // бэк синхронизирует системную операцию покупки
+            ...(form.purchasedAt ? { purchasedAt: dateInputToIso(form.purchasedAt) } : {}),
+            ...(form.purchasePrice.trim() ? { purchasePrice: Number(form.purchasePrice) } : {}),
           }),
         })
-      } else {
-        // Покупка: цена > 0 требует счёт списания; 0/пусто — «в комплекте», без операции
-        const price = form.purchasePrice.trim() === '' ? null : Number(form.purchasePrice)
-        if (price != null && price > 0 && !form.purchaseAccountId) return
+      } else if (form.bundled) {
+        // «В комплекте с трекером»: цена 0, операции нет, дата покупки — от трекера
         await api('/sim-cards', {
           method: 'POST',
           body: JSON.stringify({
             phoneNumber: form.phoneNumber,
             operator: form.operator,
             ...(form.note ? { note: form.note } : {}),
-            ...(form.purchasedAt
-              ? { purchasedAt: dateInputToIso(form.purchasedAt) }
-              : {}),
-            ...(price != null ? { purchasePrice: price } : {}),
-            ...(price != null && price > 0
-              ? { purchaseAccountId: form.purchaseAccountId }
-              : {}),
+            purchasePrice: 0,
+            bundledTrackerId: form.bundledTrackerId,
+          }),
+        })
+      } else {
+        // Отдельная покупка: дата, цена > 0 и счёт обязательны (бэк иначе вернёт 409)
+        const price = Number(form.purchasePrice)
+        await api('/sim-cards', {
+          method: 'POST',
+          body: JSON.stringify({
+            phoneNumber: form.phoneNumber,
+            operator: form.operator,
+            ...(form.note ? { note: form.note } : {}),
+            purchasedAt: dateInputToIso(form.purchasedAt),
+            purchasePrice: price,
+            purchaseAccountId: form.purchaseAccountId,
           }),
         })
       }
@@ -190,13 +201,21 @@ function SimCardsSettings() {
                     <td className="td">{simCard.operator}</td>
                     <td className="td">
                       {simCard.status === 'written_off' ? (
-                        <span className="inline-flex rounded-full bg-red-400/10 px-2.5 py-0.5 text-xs font-medium text-red-400 ring-1 ring-inset ring-red-400/20">
-                          Списана
-                          {simCard.writeOffReason &&
-                            `: ${writeOffReasonLabels[simCard.writeOffReason]}`}
-                        </span>
+                        <div>
+                          <span className="inline-flex rounded-full bg-red-400/10 px-2.5 py-0.5 text-xs font-medium text-red-400 ring-1 ring-inset ring-red-400/20">
+                            Списана
+                            {simCard.writeOffReason &&
+                              `: ${writeOffReasonLabels[simCard.writeOffReason]}`}
+                          </span>
+                          {simCard.writeOffComment && (
+                            <p className="mt-1 text-xs text-zinc-600">{simCard.writeOffComment}</p>
+                          )}
+                        </div>
                       ) : simCard.trackerId ? (
-                        <span className="text-zinc-300">В трекере</span>
+                        <span className="text-zinc-300">
+                          В трекере
+                          {simCard.bundledTrackerName ? `: ${simCard.bundledTrackerName}` : ''}
+                        </span>
                       ) : (
                         <span className="text-zinc-500">Свободна</span>
                       )}
@@ -289,6 +308,9 @@ interface SimCardForm {
   purchasedAt: string
   purchasePrice: string
   purchaseAccountId: string
+  /** «В комплекте с трекером» — только при создании */
+  bundled: boolean
+  bundledTrackerId: string
 }
 
 function SimCardModal({
@@ -307,26 +329,61 @@ function SimCardModal({
   const [phoneNumber, setPhoneNumber] = useState(initial?.phoneNumber ?? '')
   const [operator, setOperator] = useState(initial?.operator ?? '')
   const [note, setNote] = useState(initial?.note ?? '')
-  const [purchasedAt, setPurchasedAt] = useState('')
-  const [purchasePrice, setPurchasePrice] = useState('')
+  const [purchasedAt, setPurchasedAt] = useState(isoToDateInput(initial?.purchasedAt))
+  const [purchasePrice, setPurchasePrice] = useState(
+    initial?.purchasePrice != null ? String(initial.purchasePrice) : '',
+  )
   const [purchaseAccountId, setPurchaseAccountId] = useState('')
+  // «В комплекте с трекером» — только при создании
+  const [bundled, setBundled] = useState(false)
+  const [bundledTrackerId, setBundledTrackerId] = useState('')
+  const [trackers, setTrackers] = useState<GpsTracker[]>([])
+
+  // У комплектной симки дата/цена наследуются от трекера — поля только для просмотра
+  const bundledInitial = initial?.bundledTrackerId != null
+  // Предупреждение о пересчёте операции — только когда значения реально отличаются
+  const purchaseChanged =
+    !!initial &&
+    !bundledInitial &&
+    (purchasedAt !== isoToDateInput(initial.purchasedAt) ||
+      purchasePrice.trim() !== String(initial.purchasePrice ?? ''))
+
+  useEffect(() => {
+    if (!open || initial) return
+    // Комплектную симку можно добавить только в активный трекер без симки
+    api<GpsTracker[]>('/gps-trackers')
+      .then((list) => setTrackers(list.filter((t) => t.status === 'active' && t.simCardId == null)))
+      .catch(() => setTrackers([]))
+  }, [open, initial])
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault()
     if (!phoneNumber.trim() || !operator.trim()) return
-    // При создании цена > 0 требует счёт
     if (!initial) {
-      const price = purchasePrice.trim() === '' ? 0 : Number(purchasePrice)
-      if (price > 0 && !purchaseAccountId) return
+      if (bundled) {
+        if (!bundledTrackerId) return
+      } else {
+        // Отдельная покупка: дата, цена > 0 и счёт обязательны
+        const price = Number(purchasePrice)
+        if (!purchasedAt || !purchasePrice.trim() || Number.isNaN(price) || price <= 0) return
+        if (!purchaseAccountId) return
+      }
+    } else if (!bundledInitial) {
+      // Правка покупки у отдельно купленной симки: дата и цена > 0 обязательны
+      const price = Number(purchasePrice)
+      if (!purchasedAt || !purchasePrice.trim() || Number.isNaN(price) || price <= 0) return
     }
     onSave({
       id: initial?.id,
       phoneNumber: phoneNumber.trim(),
       operator: operator.trim(),
       note: note.trim(),
-      purchasedAt,
-      purchasePrice,
+      // У комплектной симки покупку не шлём — она наследуется от трекера
+      purchasedAt: bundledInitial ? '' : purchasedAt,
+      purchasePrice: bundledInitial ? '' : purchasePrice,
       purchaseAccountId,
+      bundled,
+      bundledTrackerId,
     })
     setPhoneNumber('')
     setOperator('')
@@ -334,6 +391,8 @@ function SimCardModal({
     setPurchasedAt('')
     setPurchasePrice('')
     setPurchaseAccountId('')
+    setBundled(false)
+    setBundledTrackerId('')
   }
 
   return (
@@ -366,13 +425,69 @@ function SimCardModal({
             placeholder="Необязательно"
           />
         </div>
-        {/* Покупка — только при создании; при редактировании не меняем */}
+        {/* Способ покупки — только при создании; при редактировании не меняем */}
         {!initial && (
+          <div>
+            <label className="mb-1.5 block text-sm text-zinc-400">Способ покупки</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setBundled(false)}
+                className={`rounded-lg border px-3 py-2 text-sm transition ${
+                  !bundled
+                    ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-400'
+                    : 'border-white/10 text-zinc-400 hover:border-white/20'
+                }`}
+              >
+                Куплена отдельно
+              </button>
+              <button
+                type="button"
+                onClick={() => setBundled(true)}
+                className={`rounded-lg border px-3 py-2 text-sm transition ${
+                  bundled
+                    ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-400'
+                    : 'border-white/10 text-zinc-400 hover:border-white/20'
+                }`}
+              >
+                В комплекте с трекером
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!initial && bundled && (
+          <div>
+            <label className="mb-1.5 block text-sm text-zinc-400">GPS-трекер *</label>
+            <select
+              required
+              value={bundledTrackerId}
+              onChange={(event) => setBundledTrackerId(event.target.value)}
+              className="input"
+            >
+              <option value="" disabled>
+                Выберите трекер…
+              </option>
+              {trackers.map((tracker) => (
+                <option key={tracker.id} value={tracker.id}>
+                  {tracker.model}
+                  {tracker.imei ? ` (IMEI ${tracker.imei})` : ''}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-zinc-600">
+              Цена 0 ₽, дата покупки — как у трекера; симка сразу будет вставлена в него
+            </p>
+          </div>
+        )}
+
+        {!initial && !bundled && (
           <>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="mb-1.5 block text-sm text-zinc-400">Дата покупки</label>
+                <label className="mb-1.5 block text-sm text-zinc-400">Дата покупки *</label>
                 <input
+                  required
                   type="date"
                   value={purchasedAt}
                   onChange={(event) => setPurchasedAt(event.target.value)}
@@ -380,36 +495,78 @@ function SimCardModal({
                 />
               </div>
               <div>
-                <label className="mb-1.5 block text-sm text-zinc-400">Цена покупки, ₽</label>
+                <label className="mb-1.5 block text-sm text-zinc-400">Цена покупки, ₽ *</label>
                 <input
+                  required
                   type="number"
-                  min={0}
+                  min={1}
                   value={purchasePrice}
                   onChange={(event) => setPurchasePrice(event.target.value)}
                   className="input"
-                  placeholder="0 — в комплекте"
+                  placeholder="500"
                 />
               </div>
             </div>
-            {Number(purchasePrice) > 0 && (
-              <div>
-                <label className="mb-1.5 block text-sm text-zinc-400">Счёт списания *</label>
-                <select
-                  required
-                  value={purchaseAccountId}
-                  onChange={(event) => setPurchaseAccountId(event.target.value)}
-                  className="input"
-                >
-                  <option value="" disabled>
-                    Выберите счёт…
+            <div>
+              <label className="mb-1.5 block text-sm text-zinc-400">Счёт списания *</label>
+              <select
+                required
+                value={purchaseAccountId}
+                onChange={(event) => setPurchaseAccountId(event.target.value)}
+                className="input"
+              >
+                <option value="" disabled>
+                  Выберите счёт…
+                </option>
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.name}
                   </option>
-                  {accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.name}
-                    </option>
-                  ))}
-                </select>
+                ))}
+              </select>
+            </div>
+          </>
+        )}
+
+        {/* Покупка при редактировании: у комплектной — только просмотр (наследуется от трекера) */}
+        {initial && (
+          <>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="mb-1.5 block text-sm text-zinc-400">Дата покупки *</label>
+                <input
+                  required
+                  disabled={bundledInitial}
+                  type="date"
+                  value={purchasedAt}
+                  onChange={(event) => setPurchasedAt(event.target.value)}
+                  className="input"
+                />
               </div>
+              <div>
+                <label className="mb-1.5 block text-sm text-zinc-400">Цена покупки, ₽ *</label>
+                <input
+                  required
+                  disabled={bundledInitial}
+                  type="number"
+                  min={1}
+                  value={purchasePrice}
+                  onChange={(event) => setPurchasePrice(event.target.value)}
+                  className="input"
+                />
+              </div>
+            </div>
+            {bundledInitial && (
+              <p className="text-xs text-zinc-500">
+                В комплекте с трекером
+                {initial.bundledTrackerName ? ` «${initial.bundledTrackerName}»` : ''} — дата и цена
+                наследуются от трекера
+              </p>
+            )}
+            {purchaseChanged && (
+              <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
+                При изменении даты или суммы покупки связанная финансовая операция будет пересчитана
+              </p>
             )}
           </>
         )}
@@ -734,11 +891,19 @@ function GpsTrackerModal({
   const [model, setModel] = useState(editing?.model ?? '')
   const [imei, setImei] = useState(editing?.imei ?? '')
   const [simCardId, setSimCardId] = useState(editing?.simCardId ?? '')
-  const [purchasedAt, setPurchasedAt] = useState('')
-  const [purchasePrice, setPurchasePrice] = useState('')
+  const [purchasedAt, setPurchasedAt] = useState(isoToDateInput(editing?.purchasedAt))
+  const [purchasePrice, setPurchasePrice] = useState(
+    editing?.purchasePrice != null ? String(editing.purchasePrice) : '',
+  )
   const [purchaseAccountId, setPurchaseAccountId] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  // Предупреждение о пересчёте операции — только когда значения реально отличаются
+  const purchaseChanged =
+    !!editing &&
+    (purchasedAt !== isoToDateInput(editing.purchasedAt) ||
+      purchasePrice.trim() !== String(editing.purchasePrice ?? ''))
 
   // Текущая симка трекера не входит в available=true — добавляем с пометкой
   const currentSimCard =
@@ -756,7 +921,12 @@ function GpsTrackerModal({
     setError('')
     try {
       if (editing) {
-        // Цена/дата покупки и счёт при редактировании не меняем
+        // Дата/цена покупки правятся и при редактировании — бэк синхронизирует системную операцию
+        const price = Number(purchasePrice)
+        if (!purchasedAt || !purchasePrice.trim() || Number.isNaN(price) || price <= 0) {
+          setSubmitting(false)
+          return
+        }
         await api(`/gps-trackers/${editing.id}`, {
           method: 'PATCH',
           body: JSON.stringify({
@@ -767,11 +937,13 @@ function GpsTrackerModal({
               : editing.simCardId
                 ? { clearSimCard: true }
                 : {}),
+            purchasedAt: dateInputToIso(purchasedAt),
+            purchasePrice: price,
           }),
         })
       } else {
         const price = Number(purchasePrice)
-        if (!purchasePrice.trim() || Number.isNaN(price) || price <= 0 || !purchaseAccountId) {
+        if (!purchasedAt || !purchasePrice.trim() || Number.isNaN(price) || price <= 0 || !purchaseAccountId) {
           setSubmitting(false)
           return
         }
@@ -780,8 +952,7 @@ function GpsTrackerModal({
           body: JSON.stringify({
             model: model.trim(),
             ...(imei.trim() ? { imei: imei.trim() } : {}),
-            ...(simCardId ? { simCardId } : {}),
-            ...(purchasedAt ? { purchasedAt: dateInputToIso(purchasedAt) } : {}),
+            purchasedAt: dateInputToIso(purchasedAt),
             purchasePrice: price,
             purchaseAccountId,
           }),
@@ -822,66 +993,74 @@ function GpsTrackerModal({
             placeholder="350000000000000"
           />
         </div>
-        <div>
-          <label className="mb-1.5 block text-sm text-zinc-400">SIM-карта</label>
-          <select
-            value={simCardId}
-            onChange={(event) => setSimCardId(event.target.value)}
-            className="input"
-          >
-            <option value="">Без симки</option>
-            {currentSimCard && <option value={currentSimCard.id}>{currentSimCard.label}</option>}
-            {simCards.map((simCard) => (
-              <option key={simCard.id} value={simCard.id}>
-                {simCard.phoneNumber} · {simCard.operator}
-              </option>
-            ))}
-          </select>
+        {/* SIM-карта — только при редактировании; при создании симка ставится отдельно (в т.ч. комплектная) */}
+        {editing && (
+          <div>
+            <label className="mb-1.5 block text-sm text-zinc-400">SIM-карта</label>
+            <select
+              value={simCardId}
+              onChange={(event) => setSimCardId(event.target.value)}
+              className="input"
+            >
+              <option value="">Без симки</option>
+              {currentSimCard && <option value={currentSimCard.id}>{currentSimCard.label}</option>}
+              {simCards.map((simCard) => (
+                <option key={simCard.id} value={simCard.id}>
+                  {simCard.phoneNumber} · {simCard.operator}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {/* Покупка: дата и цена правятся и при редактировании, счёт — только при создании */}
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="mb-1.5 block text-sm text-zinc-400">Дата покупки *</label>
+            <input
+              required
+              type="date"
+              value={purchasedAt}
+              onChange={(event) => setPurchasedAt(event.target.value)}
+              className="input"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm text-zinc-400">Цена покупки, ₽ *</label>
+            <input
+              required
+              type="number"
+              min={1}
+              value={purchasePrice}
+              onChange={(event) => setPurchasePrice(event.target.value)}
+              className="input"
+              placeholder="3000"
+            />
+          </div>
         </div>
         {!editing && (
-          <>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="mb-1.5 block text-sm text-zinc-400">Дата покупки</label>
-                <input
-                  type="date"
-                  value={purchasedAt}
-                  onChange={(event) => setPurchasedAt(event.target.value)}
-                  className="input"
-                />
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm text-zinc-400">Цена покупки, ₽ *</label>
-                <input
-                  required
-                  type="number"
-                  min={1}
-                  value={purchasePrice}
-                  onChange={(event) => setPurchasePrice(event.target.value)}
-                  className="input"
-                  placeholder="0"
-                />
-              </div>
-            </div>
-            <div>
-              <label className="mb-1.5 block text-sm text-zinc-400">Счёт списания *</label>
-              <select
-                required
-                value={purchaseAccountId}
-                onChange={(event) => setPurchaseAccountId(event.target.value)}
-                className="input"
-              >
-                <option value="" disabled>
-                  Выберите счёт…
+          <div>
+            <label className="mb-1.5 block text-sm text-zinc-400">Счёт списания *</label>
+            <select
+              required
+              value={purchaseAccountId}
+              onChange={(event) => setPurchaseAccountId(event.target.value)}
+              className="input"
+            >
+              <option value="" disabled>
+                Выберите счёт…
+              </option>
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.name}
                 </option>
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </>
+              ))}
+            </select>
+          </div>
+        )}
+        {purchaseChanged && (
+          <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
+            При изменении даты или суммы покупки связанная финансовая операция будет пересчитана
+          </p>
         )}
 
         {error && (
@@ -1008,6 +1187,13 @@ function TrackerWriteOffModal({
             placeholder="Необязательно"
           />
         </div>
+
+        {/* Каскад: вставленная симка спишется вместе с трекером */}
+        {tracker.simCardId && (
+          <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
+            SIM-карта {tracker.simPhoneNumber ?? ''} будет списана вместе с трекером
+          </p>
+        )}
 
         {error && (
           <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
