@@ -247,14 +247,14 @@ export function FinancePage() {
       />
 
       <AccountModal
-        key={accountModal.account?.id ?? 'new'}
+        key={accountModal.account?.id ?? 'new-account'}
         state={accountModal}
         onClose={() => setAccountModal({ open: false })}
         onSave={saveAccount}
       />
 
       <TransactionModal
-        key={transactionModal.transaction?.id ?? 'new'}
+        key={transactionModal.transaction?.id ?? 'new-transaction'}
         state={transactionModal}
         accounts={accounts}
         categories={categories}

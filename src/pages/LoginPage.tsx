@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bike, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { ApiError } from '../api/client'
 
@@ -30,13 +30,7 @@ export function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <div className="panel w-full max-w-sm p-8">
-        <div className="mb-8 flex flex-col items-center gap-3">
-          <span className="rounded-xl bg-emerald-400/10 p-3 text-emerald-400">
-            <Bike size={28} />
-          </span>
-          <h1 className="text-xl font-semibold text-zinc-100">ВелоПрокат</h1>
-          <p className="text-sm text-zinc-500">Войдите в систему</p>
-        </div>
+        <h1 className="mb-8 text-center text-xl font-semibold text-zinc-100">Войдите в систему</h1>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -51,7 +45,6 @@ export function LoginPage() {
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               className="input"
-              placeholder="admin@velo.local"
             />
           </div>
           <div>
@@ -66,7 +59,6 @@ export function LoginPage() {
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               className="input"
-              placeholder="••••••••"
             />
           </div>
 
@@ -76,7 +68,7 @@ export function LoginPage() {
             </p>
           )}
 
-          <button type="submit" disabled={loading} className="btn-primary w-full">
+          <button type="submit" disabled={loading} className="btn-primary w-full justify-center">
             {loading && <Loader2 size={16} className="animate-spin" />}
             Войти
           </button>
