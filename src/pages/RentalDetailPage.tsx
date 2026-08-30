@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Banknote, Check, CheckCircle2, ClipboardList, History, KeyRound, Pencil, Trash2, Undo2, X } from 'lucide-react'
+import { ArrowLeft, Banknote, Check, CheckCircle2, ClipboardList, History, KeyRound, Lock, Pencil, Trash2, Undo2, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission, PERMISSIONS } from '../auth/permissions'
@@ -36,11 +36,10 @@ export function RentalDetailPage() {
   const [customerPhone, setCustomerPhone] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  // Модалки: приём оплаты, история оплат, история возвратов, выдача (черновик),
+  // Модалки: приём оплаты, история оплат (платежи и возвраты), выдача (черновик),
   // завершение (активная), досрочный возврат с рефандом, продление
   const [paymentOpen, setPaymentOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [refundHistoryOpen, setRefundHistoryOpen] = useState(false)
   const [issueOpen, setIssueOpen] = useState(false)
   const [completeOpen, setCompleteOpen] = useState(false)
   const [earlyReturnOpen, setEarlyReturnOpen] = useState(false)
@@ -132,10 +131,9 @@ export function RentalDetailPage() {
 
   const isDraft = rental.status === 'draft'
   const isActive = rental.status === 'active' || rental.status === 'overdue'
+  const isCompleted = rental.status === 'completed' || rental.status === 'completed_early'
   const canExtend = isActive && rental.kind === 'rent' && rental.plannedEndAt != null
   const remaining = Math.max(0, rental.amount - rental.paidAmount)
-  // Возвращено клиенту — из ответа аренды (refundedAmount), отдельно от оплат
-  const refundTotal = rental.refundedAmount
   // Группировка комплекта: верхнеуровневые позиции + их дочерние АКБ/зарядники
   const topLevelItems = rental.items.filter((item) => !item.parentItemId)
   const childrenOf = (parentId: string): RentalItem[] =>
@@ -185,9 +183,14 @@ export function RentalDetailPage() {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-8">
             <div>
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Сумма аренды</p>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Начислено</p>
               <p className="mt-0.5 text-xl font-semibold text-zinc-100">
                 {formatMoney(rental.amount)}
+                {isCompleted && (
+                  <span className="ml-2 align-middle text-xs font-normal normal-case text-zinc-500">
+                    зафиксирована
+                  </span>
+                )}
               </p>
             </div>
             <div>
@@ -196,21 +199,23 @@ export function RentalDetailPage() {
                 {formatMoney(rental.paidAmount)}
               </p>
             </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Остаток</p>
-              <p
-                className={`mt-0.5 text-xl font-semibold ${
-                  remaining > 0 ? 'text-amber-400' : 'text-zinc-500'
-                }`}
-              >
-                {formatMoney(remaining)}
-              </p>
-            </div>
             {rental.refundedAmount > 0 && (
               <div>
                 <p className="text-xs uppercase tracking-wide text-zinc-500">Возвращено</p>
                 <p className="mt-0.5 text-xl font-semibold text-red-400">
                   {formatMoney(rental.refundedAmount)}
+                </p>
+              </div>
+            )}
+            {(isDraft || isActive) && (
+              <div>
+                <p className="text-xs uppercase tracking-wide text-zinc-500">Остаток</p>
+                <p
+                  className={`mt-0.5 text-xl font-semibold ${
+                    remaining > 0 ? 'text-amber-400' : 'text-zinc-500'
+                  }`}
+                >
+                  {formatMoney(remaining)}
                 </p>
               </div>
             )}
@@ -245,28 +250,6 @@ export function RentalDetailPage() {
           </div>
         </div>
       </section>
-
-      {/* Возвраты — расходные операции по аренде; виден только с правом finance:view */}
-      {canViewFinance && rental.refundedAmount > 0 && (
-        <section className="panel border-red-400/20 p-5">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Возвраты</p>
-              <p className="mt-0.5 text-xl font-semibold text-red-400">
-                {formatMoney(refundTotal)}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setRefundHistoryOpen(true)}
-              className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-zinc-400 transition hover:border-red-400/40 hover:text-red-400"
-            >
-              <History size={16} />
-              История возвратов
-            </button>
-          </div>
-        </section>
-      )}
 
       {/* Информация */}
       <section className="panel p-5">
@@ -531,24 +514,13 @@ export function RentalDetailPage() {
         />
       )}
 
-      {/* История оплат: правка даты/суммы и удаление платежей (нужно право finance:view) */}
+      {/* История оплат: платежи и возвраты; правка даты/суммы и удаление (нужно право finance:view) */}
       {historyOpen && (
         <PaymentHistoryModal
           rentalId={rental.id}
           accounts={accounts}
-          kind="income"
+          locked={isCompleted}
           onClose={() => setHistoryOpen(false)}
-          onChanged={loadRental}
-        />
-      )}
-
-      {/* История возвратов: правка даты/суммы и удаление возвратов (нужно право finance:view) */}
-      {refundHistoryOpen && (
-        <PaymentHistoryModal
-          rentalId={rental.id}
-          accounts={accounts}
-          kind="expense"
-          onClose={() => setRefundHistoryOpen(false)}
           onChanged={loadRental}
         />
       )}
@@ -589,6 +561,7 @@ export function RentalDetailPage() {
       {/* Досрочный возврат: все позиции возвращаются; опционально — возврат денег клиенту */}
       {earlyReturnOpen && (
         <EarlyReturnModal
+          rental={rental}
           accounts={accounts}
           onClose={() => setEarlyReturnOpen(false)}
           onSubmit={async (refundAmount, refundAccountId, date) => {
@@ -652,21 +625,21 @@ export function RentalDetailPage() {
 }
 
 /**
- * История оплат/возвратов аренды: операции с rental_id нужного kind. Дату и сумму можно
- * поправить, операцию — удалить (если была ошибка). Баланс счёта пересчитывать не нужно —
- * он вычисляемый.
+ * История оплат аренды: и приходы (оплаты клиента), и расходы (возвраты денег). Дату и сумму
+ * можно поправить, операцию — удалить (если была ошибка). Баланс счёта пересчитывать не нужно —
+ * он вычисляемый. У завершённой аренды операции заморожены (бэк вернёт 409) — вместо кнопок замок.
  */
 function PaymentHistoryModal({
   rentalId,
   accounts,
-  kind,
+  locked,
   onClose,
   onChanged,
 }: {
   rentalId: string
   accounts: AccountOption[]
-  /** income — оплаты клиента, expense — возвраты денег клиенту */
-  kind: 'income' | 'expense'
+  /** Аренда завершена — правка и удаление операций запрещены */
+  locked: boolean
   onClose: () => void
   onChanged: () => Promise<void>
 }) {
@@ -674,21 +647,17 @@ function PaymentHistoryModal({
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState<string | null>(null)
 
-  const isExpense = kind === 'expense'
-  const title = isExpense ? 'История возвратов' : 'История оплат'
-  const noun = isExpense ? 'возврат' : 'оплату'
-
   const accountName = (accountId: string) =>
     accounts.find((account) => account.id === accountId)?.name ?? '—'
 
   const load = useCallback(async () => {
     try {
-      setPayments(await api<Transaction[]>(`/finance/transactions?rentalId=${rentalId}&kind=${kind}`))
+      setPayments(await api<Transaction[]>(`/finance/transactions?rentalId=${rentalId}`))
       setError('')
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : `Не удалось загрузить: ${title.toLowerCase()}`)
+      setError(err instanceof ApiError ? err.message : 'Не удалось загрузить историю оплат')
     }
-  }, [rentalId, kind, title])
+  }, [rentalId])
 
   useEffect(() => {
     void load()
@@ -709,13 +678,18 @@ function PaymentHistoryModal({
       await onChanged()
       onClose()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : `Не удалось сохранить ${noun}`)
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : `Не удалось сохранить ${payment.kind === 'expense' ? 'возврат' : 'оплату'}`
+      )
     } finally {
       setBusyId(null)
     }
   }
 
   const deletePayment = async (payment: Transaction) => {
+    const noun = payment.kind === 'expense' ? 'возврат' : 'оплату'
     if (!window.confirm(`Удалить ${noun} ${formatMoney(payment.amount)}?`)) return
     setBusyId(payment.id)
     setError('')
@@ -731,7 +705,7 @@ function PaymentHistoryModal({
   }
 
   return (
-    <Modal open title={title} onClose={onClose}>
+    <Modal open title="История оплат" onClose={onClose}>
       <div className="space-y-3">
         {error && (
           <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
@@ -741,9 +715,7 @@ function PaymentHistoryModal({
         {payments === null ? (
           <p className="text-sm text-zinc-500">Загрузка…</p>
         ) : payments.length === 0 ? (
-          <p className="text-sm text-zinc-500">
-            {isExpense ? 'Возвратов пока нет' : 'Оплат пока нет'}
-          </p>
+          <p className="text-sm text-zinc-500">Оплат пока нет</p>
         ) : (
           payments.map((payment) => (
             <PaymentRow
@@ -751,6 +723,7 @@ function PaymentHistoryModal({
               payment={payment}
               accountName={accountName(payment.accountId)}
               busy={busyId === payment.id}
+              locked={locked}
               onSave={savePayment}
               onDelete={deletePayment}
             />
@@ -761,33 +734,72 @@ function PaymentHistoryModal({
   )
 }
 
-/** Строка оплаты с инлайн-редактированием суммы и даты */
+/** Строка оплаты/возврата с инлайн-редактированием суммы и даты; locked — только просмотр */
 function PaymentRow({
   payment,
   accountName,
   busy,
+  locked,
   onSave,
   onDelete,
 }: {
   payment: Transaction
   accountName: string
   busy: boolean
+  locked: boolean
   onSave: (payment: Transaction, amount: string, date: string) => Promise<void>
   onDelete: (payment: Transaction) => Promise<void>
 }) {
+  const isExpense = payment.kind === 'expense'
   const [amount, setAmount] = useState(String(payment.amount))
   const [date, setDate] = useState(() => toLocalInputValue(new Date(payment.date)))
   const dirty = amount !== String(payment.amount) || date !== toLocalInputValue(new Date(payment.date))
 
+  const refundBadge = isExpense && (
+    <span className="shrink-0 rounded-full bg-red-400/10 px-2 py-0.5 text-xs font-medium text-red-400 ring-1 ring-inset ring-red-400/20">
+      Возврат
+    </span>
+  )
+  const caption = (
+    <p className="mt-1.5 pl-1 text-xs text-zinc-500">
+      {isExpense ? 'Возврат клиенту' : 'Оплата'} · {accountName}
+      {payment.comment ? ` · ${payment.comment}` : ''}
+    </p>
+  )
+
+  // У завершённой аренды операции заморожены (бэк отклоняет PATCH/DELETE с 409) — только просмотр
+  if (locked) {
+    return (
+      <div className="rounded-lg border border-white/10 p-3">
+        <div className="flex items-center gap-2">
+          <span className={`font-medium ${isExpense ? 'text-red-400' : 'text-emerald-400'}`}>
+            {isExpense ? '−' : '+'}
+            {formatMoney(payment.amount)}
+          </span>
+          {refundBadge}
+          <span className="text-sm text-zinc-500">{formatDateTime(payment.date)}</span>
+          <span
+            className="ml-auto inline-flex p-2 text-zinc-600"
+            title="Аренда завершена — операции заморожены"
+          >
+            <Lock size={14} />
+          </span>
+        </div>
+        {caption}
+      </div>
+    )
+  }
+
   return (
     <div className="rounded-lg border border-white/10 p-3">
       <div className="flex items-center gap-2">
+        {refundBadge}
         <input
           type="number"
           min={1}
           value={amount}
           onChange={(event) => setAmount(event.target.value)}
-          className="input w-28 shrink-0"
+          className={`input w-28 shrink-0 ${isExpense ? 'text-red-400' : ''}`}
           title="Сумма, ₽"
         />
         <input
@@ -795,7 +807,7 @@ function PaymentRow({
           value={date}
           onChange={(event) => setDate(event.target.value)}
           className="input"
-          title="Дата оплаты"
+          title={isExpense ? 'Дата возврата' : 'Дата оплаты'}
         />
         {dirty ? (
           <button
@@ -812,17 +824,14 @@ function PaymentRow({
             type="button"
             disabled={busy}
             onClick={() => void onDelete(payment)}
-            title={payment.kind === 'expense' ? 'Удалить возврат' : 'Удалить оплату'}
+            title={isExpense ? 'Удалить возврат' : 'Удалить оплату'}
             className="shrink-0 rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
           >
             <Trash2 size={16} />
           </button>
         )}
       </div>
-      <p className="mt-1.5 pl-1 text-xs text-zinc-500">
-        {payment.kind === 'expense' ? 'Возврат клиенту' : 'Оплата'} · {accountName}
-        {payment.comment ? ` · ${payment.comment}` : ''}
-      </p>
+      {caption}
     </div>
   )
 }
@@ -1127,21 +1136,76 @@ function IssueModal({
   )
 }
 
-/** Модалка досрочного возврата: все позиции разом; дата приёма и опционально возврат денег клиенту. */
+/**
+ * Модалка досрочного возврата: все позиции разом; дата приёма и опционально возврат денег клиенту.
+ * Дата валидируется «на лету» по локальным календарным дням (как на бэке), начисленное за
+ * фактический срок и переплата пересчитываются при каждом изменении даты.
+ */
 function EarlyReturnModal({
+  rental,
   accounts,
   onClose,
   onSubmit,
 }: {
+  rental: Rental
   accounts: AccountOption[]
   onClose: () => void
   onSubmit: (refundAmount: string, refundAccountId: string, date: string) => Promise<void>
 }) {
   const [date, setDate] = useState(toLocalInputValue(new Date()))
   const [refundAmount, setRefundAmount] = useState('')
+  // Пользователь правил сумму возврата вручную — при смене даты её больше не перезаполняем
+  const [refundTouched, setRefundTouched] = useState(false)
   const [refundAccountId, setRefundAccountId] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  const start = new Date(rental.startAt)
+  const end = rental.plannedEndAt ? new Date(rental.plannedEndAt) : null
+  const picked = date ? new Date(date) : null
+  const pickedValid = picked != null && !Number.isNaN(picked.getTime())
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+
+  // Начисленное за фактический срок startAt → дата приёма: ceil по единицам тарифа, минимум 1
+  // (формула как на бэке); комплектные позиции (parentItemId) — всегда 0, пропускаем
+  const accrued = useMemo(() => {
+    if (!date) return null
+    const at = new Date(date)
+    if (Number.isNaN(at.getTime())) return null
+    const startMs = new Date(rental.startAt).getTime()
+    return rental.items
+      .filter((item) => !item.parentItemId)
+      .reduce((sum, item) => {
+        const unitMs = (UNIT_SECONDS[item.tariffUnit] ?? 86400) * 1000
+        return sum + item.rate * Math.max(1, Math.ceil((at.getTime() - startMs) / unitMs))
+      }, 0)
+  }, [date, rental])
+
+  // Переплата = потолок возврата (бэк тоже проверяет, 409)
+  const overpaid = accrued != null ? Math.max(0, rental.paidAmount - accrued) : 0
+
+  // Дата строго в календарный день ДО дня окончания и не раньше дня начала (локальные дни браузера)
+  const dateError =
+    picked == null || !pickedValid
+      ? null
+      : end != null && (sameDay(picked, end) || picked > end)
+        ? 'Это не досрочный возврат: возврат в день окончания или позже оформляется обычным завершением'
+        : !sameDay(picked, start) && picked < start
+          ? 'Дата приёма раньше дня начала аренды'
+          : null
+
+  const showRefund = accrued != null && dateError == null && overpaid > 0
+  const refundValue = Number(refundAmount)
+  const refundError =
+    showRefund && refundAmount.trim() !== '' && refundValue > overpaid
+      ? `Сумма возврата не может быть больше переплаты (${formatMoney(overpaid)})`
+      : null
+
+  // Предзаполнение суммы возврата переплатой — пока пользователь не правил поле вручную
+  useEffect(() => {
+    if (!refundTouched) setRefundAmount(overpaid > 0 ? String(overpaid) : '')
+  }, [overpaid, refundTouched])
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -1149,14 +1213,16 @@ function EarlyReturnModal({
       setError('Укажите дату приёма')
       return
     }
-    if (Number(refundAmount) > 0 && !refundAccountId) {
+    if (dateError || refundError) return // кнопка задизейблена
+    const refund = showRefund ? refundAmount : ''
+    if (Number(refund) > 0 && !refundAccountId) {
       setError('Укажите счёт, с которого вернуть деньги')
       return
     }
     setSubmitting(true)
     setError('')
     try {
-      await onSubmit(refundAmount, refundAccountId, date)
+      await onSubmit(refund, refundAccountId, date)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось оформить возврат')
     } finally {
@@ -1164,12 +1230,14 @@ function EarlyReturnModal({
     }
   }
 
+  const validationError = error || dateError || refundError
+
   return (
     <Modal open title="Вернуть досрочно" onClose={onClose}>
       <form onSubmit={handleSubmit} className="space-y-4">
-        {error && (
+        {validationError && (
           <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
-            {error}
+            {validationError}
           </p>
         )}
         <p className="text-sm text-zinc-400">
@@ -1186,18 +1254,30 @@ function EarlyReturnModal({
             className="input"
           />
         </div>
-        <div>
-          <label className="mb-1.5 block text-sm text-zinc-400">Вернуть клиенту, ₽</label>
-          <input
-            type="number"
-            min={0}
-            value={refundAmount}
-            onChange={(event) => setRefundAmount(event.target.value)}
-            className="input"
-            placeholder="0 — без возврата денег"
-          />
-        </div>
-        {Number(refundAmount) > 0 && (
+        {pickedValid && picked != null && dateError == null && accrued != null && (
+          <p className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-300">
+            Начислено за период по {formatDateTime(picked.toISOString())}: {formatMoney(accrued)} ·
+            Оплачено: {formatMoney(rental.paidAmount)} ·{' '}
+            {overpaid > 0 ? `К возврату: ${formatMoney(overpaid)}` : 'Переплаты нет — возвращать нечего'}
+          </p>
+        )}
+        {showRefund && (
+          <div>
+            <label className="mb-1.5 block text-sm text-zinc-400">Вернуть клиенту, ₽</label>
+            <input
+              type="number"
+              min={0}
+              value={refundAmount}
+              onChange={(event) => {
+                setRefundTouched(true)
+                setRefundAmount(event.target.value)
+              }}
+              className="input"
+              placeholder="0 — без возврата денег"
+            />
+          </div>
+        )}
+        {showRefund && refundValue > 0 && (
           <div>
             <label className="mb-1.5 block text-sm text-zinc-400">Со счёта *</label>
             <select
@@ -1217,7 +1297,11 @@ function EarlyReturnModal({
             </select>
           </div>
         )}
-        <button type="submit" disabled={submitting} className="btn-primary w-full">
+        <button
+          type="submit"
+          disabled={submitting || dateError != null || refundError != null}
+          className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-40"
+        >
           <Undo2 size={16} />
           Вернуть досрочно
         </button>

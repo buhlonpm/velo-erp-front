@@ -405,6 +405,9 @@ export interface Transaction {
   assetId: string | null
   /** Системная операция (покупка/продажа техники) — не редактируется и не удаляется */
   system: boolean
+  /** Статус аренды, к которой привязана операция; null — операция без аренды.
+   *  completed/completed_early — операция заморожена (бэк отклоняет PATCH/DELETE с 409) */
+  rentalStatus: string | null
 }
 
 /** Дашборд: счётчики активов одного типа по статусам */
