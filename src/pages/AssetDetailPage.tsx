@@ -8,6 +8,7 @@ import {
   Ban,
   BatteryCharging,
   Bike,
+  Check,
   ChevronDown,
   Gauge,
   Info,
@@ -17,20 +18,21 @@ import {
   RefreshCw,
   Satellite,
   ShoppingBag,
+  Trash2,
   TrendingDown,
   Wallet,
   Zap,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api, ApiError } from '../api/client'
-import type { AccountOption, Asset, AssetDetail, AssetEventType, BikeModel, Category, CategoryKind, GpsTracker } from '../types'
+import type { AccountOption, Asset, AssetDetail, AssetEventType, BikeModel, Category, CategoryKind, GpsTracker, MileageLogEntry } from '../types'
 import { EmptyState } from '../components/EmptyState'
 import { ChargeCyclesModal } from '../components/ChargeCyclesModal'
 import { MileageModal } from '../components/MileageModal'
 import { Modal } from '../components/Modal'
 import { StatusBadge } from '../components/StatusBadge'
 import { WriteOffModal } from '../components/WriteOffModal'
-import { dateInputToIso, formatDate, formatDateTime, formatMoney, formatNumber, isoToDateInput } from '../lib/format'
+import { dateInputToIso, formatDate, formatDateTime, formatMoney, formatNumber, isoToDateInput, todayDateInput } from '../lib/format'
 import {
   assetEventTypeLabels,
   assetStatusLabels,
@@ -112,6 +114,20 @@ export function AssetDetailPage() {
     })
     await loadDetail()
     setMileageOpen(false)
+  }
+
+  // Правка/удаление записей журнала пробега — как у оплат аренды; ошибки кидаем в строку
+  const saveMileageEntry = async (entry: MileageLogEntry, mileageKm: string, recordedAt: string) => {
+    await api(`/assets/${id}/mileage/${entry.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ mileageKm: Number(mileageKm), recordedAt: new Date(recordedAt).toISOString() }),
+    })
+    await loadDetail()
+  }
+
+  const deleteMileageEntry = async (entry: MileageLogEntry) => {
+    await api(`/assets/${id}/mileage/${entry.id}`, { method: 'DELETE' })
+    await loadDetail()
   }
 
   const saveChargeCycles = async (assetId: string, cycles: number, recordedAt: string | null) => {
@@ -230,7 +246,7 @@ export function AssetDetailPage() {
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-zinc-100">Паспорт</h2>
           <span className="inline-flex gap-2">
-            {(isBike || asset.type === 'battery') && !writtenOff && (
+            {!writtenOff && (
               <button
                 type="button"
                 onClick={() => setEditOpen(true)}
@@ -244,10 +260,10 @@ export function AssetDetailPage() {
               <button
                 type="button"
                 onClick={() => setWriteOffOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-red-400/20 px-3 py-1.5 text-xs font-medium text-red-400 transition hover:bg-red-400/10"
+                title="Списать"
+                className="inline-flex items-center justify-center rounded-full border border-red-400/20 p-1.5 text-red-400 transition hover:bg-red-400/10"
               >
                 <Ban size={14} />
-                Списать
               </button>
             )}
           </span>
@@ -331,14 +347,6 @@ export function AssetDetailPage() {
               {asset.purchasePrice != null ? formatMoney(asset.purchasePrice) : '—'}
             </dd>
           </div>
-          {asset.type !== 'charger' && (
-            <div className="flex justify-between gap-4">
-              <dt className="text-zinc-500">Текущий пробег</dt>
-              <dd className="text-zinc-300">
-                {asset.mileageKm != null ? `${formatNumber(asset.mileageKm)} км` : '—'}
-              </dd>
-            </div>
-          )}
           {asset.writeOffReason && (
             <>
               <div className="flex justify-between gap-4">
@@ -558,13 +566,6 @@ export function AssetDetailPage() {
             )}
           </>
         )}
-        {asset.type !== 'charger' && (
-          <TotalCard
-            title="Пробег"
-            value={asset.mileageKm != null ? `${formatNumber(asset.mileageKm)} км` : '—'}
-            icon={Gauge}
-          />
-        )}
         {asset.type === 'battery' && (
           <TotalCard
             title="Циклы перезарядки"
@@ -574,53 +575,60 @@ export function AssetDetailPage() {
         )}
       </section>
 
-      {/* Пробег: у велосипеда и АКБ, запись вручную */}
+      {/* Пробег: у велосипеда и АКБ — текущее значение, добавление и история записей */}
       {asset.type !== 'charger' && (
       <section className="panel">
         <div className={`flex items-center justify-between px-5 py-4 ${mileageExpanded ? 'border-b border-white/5' : ''}`}>
-          <button
-            type="button"
-            onClick={() => setMileageExpanded((value) => !value)}
-            className="inline-flex items-center gap-2 font-semibold text-zinc-100 transition hover:text-white"
-          >
-            <ChevronDown
-              size={16}
-              className={`text-zinc-500 transition-transform ${mileageExpanded ? '' : '-rotate-90'}`}
-            />
-            Пробег
-            <span className="text-sm font-normal text-zinc-500">{mileageLog.length}</span>
-          </button>
-          {!writtenOff && (
-            <button type="button" onClick={() => setMileageOpen(true)} className="btn-primary">
+          <div className="flex items-center gap-3">
+            <span className="rounded-lg bg-white/5 p-2 text-zinc-400">
               <Gauge size={16} />
-              Записать пробег
+            </span>
+            <div className="flex items-baseline gap-2">
+              <h2 className="font-semibold text-zinc-100">Пробег</h2>
+              <span className="text-sm text-zinc-400">
+                {asset.mileageKm != null ? `${formatNumber(asset.mileageKm)} км` : 'не записан'}
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setMileageExpanded((value) => !value)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 text-xs font-medium text-zinc-400 transition hover:border-white/25 hover:text-zinc-200"
+            >
+              <ChevronDown
+                size={14}
+                className={`transition-transform ${mileageExpanded ? '' : '-rotate-90'}`}
+              />
+              История пробегов
+              <span className="text-zinc-600">{mileageLog.length}</span>
             </button>
-          )}
+            {!writtenOff && (
+              <button
+                type="button"
+                onClick={() => setMileageOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/30 px-3 py-2 text-xs font-medium text-emerald-400 transition hover:bg-emerald-400/10"
+              >
+                <Plus size={14} />
+                Добавить пробег
+              </button>
+            )}
+          </div>
         </div>
         {mileageExpanded && (
           mileageLog.length === 0 ? (
             <EmptyState icon={Gauge} title="Записей нет" description="Запишите первое значение пробега" />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-white/5">
-                    <th className="th">Пробег</th>
-                    <th className="th text-right">Дата</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {mileageLog.map((entry, index) => (
-                    <tr
-                      key={entry.id}
-                      className={`transition hover:bg-white/5 ${index % 2 === 1 ? 'bg-white/[0.02]' : ''}`}
-                    >
-                      <td className="td">{formatNumber(entry.mileageKm)} км</td>
-                      <td className="td text-right text-zinc-500">{formatDateTime(entry.recordedAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-2 p-4">
+              {mileageLog.map((entry) => (
+                <MileageRow
+                  key={entry.id}
+                  entry={entry}
+                  readOnly={writtenOff}
+                  onSave={saveMileageEntry}
+                  onDelete={deleteMileageEntry}
+                />
+              ))}
             </div>
           )
         )}
@@ -850,9 +858,6 @@ export function AssetDetailPage() {
                       {event.amount != null && (
                         <span className="ml-2 text-zinc-400">({formatMoney(event.amount)})</span>
                       )}
-                      {event.createdByName && (
-                        <span className="ml-2 text-xs text-zinc-600">· {event.createdByName}</span>
-                      )}
                     </p>
                     {event.comment && (
                       <p className="mt-0.5 truncate text-xs text-zinc-500" title={event.comment}>
@@ -860,9 +865,12 @@ export function AssetDetailPage() {
                       </p>
                     )}
                   </div>
-                  <p className="shrink-0 text-right text-xs text-zinc-600">
-                    {formatDateTime(event.date)}
-                  </p>
+                  <div className="shrink-0 text-right">
+                    <span className="block text-xs text-zinc-500">{formatDateTime(event.date)}</span>
+                    {event.createdByName && (
+                      <span className="block text-xs text-zinc-600">{event.createdByName}</span>
+                    )}
+                  </div>
                 </li>
               )
             })}
@@ -1190,7 +1198,7 @@ function AssetTransactionModal({
   )
 }
 
-/** Редактирование паспорта велосипеда (PATCH /assets/{id}) */
+/** Редактирование паспорта актива (PATCH /assets/{id}) — все три типа */
 function AssetEditModal({
   open,
   asset,
@@ -1207,6 +1215,8 @@ function AssetEditModal({
   const isBike = asset.type === 'bike'
   const isBattery = asset.type === 'battery'
   const isCharger = asset.type === 'charger'
+  // Комплектный актив: покупка наследуется от велосипеда, поля скрываем и не шлём
+  const bundled = asset.bundledBikeId != null
   const [inventoryNumber, setInventoryNumber] = useState(asset.inventoryNumber)
   const [name, setName] = useState(asset.name)
   const [modelId, setModelId] = useState(asset.modelId ?? '')
@@ -1237,8 +1247,8 @@ function AssetEditModal({
           ...(!isBike && name.trim() ? { name: name.trim() } : {}),
           ...(isBike && modelId ? { modelId } : {}),
           description: description.trim(),
-          ...(purchasedAt ? { purchasedAt: dateInputToIso(purchasedAt) } : {}),
-          ...(purchasePrice.trim() ? { purchasePrice: Number(purchasePrice) } : {}),
+          ...(!bundled && purchasedAt ? { purchasedAt: dateInputToIso(purchasedAt) } : {}),
+          ...(!bundled && purchasePrice.trim() ? { purchasePrice: Number(purchasePrice) } : {}),
           ...(isBattery && voltage.trim() ? { voltage: Number(voltage) } : {}),
           ...(isBattery && capacityAh.trim() ? { capacityAh: Number(capacityAh) } : {}),
           ...(isCharger && powerW.trim() ? { powerW: Number(powerW) } : {}),
@@ -1361,11 +1371,18 @@ function AssetEditModal({
             className="input resize-none"
           />
         </div>
+        {bundled ? (
+          <p className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-zinc-500">
+            В комплекте с {asset.bundledBikeName ?? 'велосипедом'} — дата и цена покупки
+            наследуются от него и не редактируются
+          </p>
+        ) : (
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="mb-1.5 block text-sm text-zinc-400">Дата покупки</label>
             <input
               type="date"
+              max={todayDateInput()}
               value={purchasedAt}
               onChange={(event) => setPurchasedAt(event.target.value)}
               className="input"
@@ -1383,6 +1400,7 @@ function AssetEditModal({
             />
           </div>
         </div>
+        )}
 
         {error && (
           <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
@@ -1552,3 +1570,93 @@ function AccessoryMountModal({
   )
 }
 
+
+/** Значение для input datetime-local из Date (в локальной TZ) */
+function toLocalInputValue(date: Date): string {
+  const offset = date.getTimezoneOffset() * 60_000
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16)
+}
+
+/**
+ * Строка журнала пробега с инлайн-правкой — механика как у оплат аренды:
+ * данные изменены → кнопка «сохранить» (галка), не изменены → «удалить» (корзина).
+ */
+function MileageRow({
+  entry,
+  readOnly,
+  onSave,
+  onDelete,
+}: {
+  entry: MileageLogEntry
+  readOnly: boolean
+  onSave: (entry: MileageLogEntry, mileageKm: string, recordedAt: string) => Promise<void>
+  onDelete: (entry: MileageLogEntry) => Promise<void>
+}) {
+  const [mileageKm, setMileageKm] = useState(String(entry.mileageKm))
+  const [recordedAt, setRecordedAt] = useState(() => toLocalInputValue(new Date(entry.recordedAt)))
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const dirty =
+    mileageKm !== String(entry.mileageKm) ||
+    recordedAt !== toLocalInputValue(new Date(entry.recordedAt))
+
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true)
+    setError('')
+    try {
+      await action()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить запись')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-white/10 p-3">
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          min={0}
+          value={mileageKm}
+          disabled={readOnly}
+          onChange={(event) => setMileageKm(event.target.value)}
+          className="input w-28 shrink-0"
+          title="Пробег, км"
+        />
+        <span className="shrink-0 text-sm text-zinc-500">км</span>
+        <input
+          type="datetime-local"
+          value={recordedAt}
+          disabled={readOnly}
+          onChange={(event) => setRecordedAt(event.target.value)}
+          className="input"
+          title="Дата записи"
+        />
+        {!readOnly &&
+          (dirty ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(() => onSave(entry, mileageKm, recordedAt))}
+              title="Сохранить"
+              className="shrink-0 rounded-lg p-2 text-emerald-400 transition hover:bg-emerald-400/10"
+            >
+              <Check size={16} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(() => onDelete(entry))}
+              title="Удалить запись"
+              className="shrink-0 rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
+            >
+              <Trash2 size={16} />
+            </button>
+          ))}
+      </div>
+      {error && <p className="mt-1.5 pl-1 text-xs text-red-400">{error}</p>}
+    </div>
+  )
+}

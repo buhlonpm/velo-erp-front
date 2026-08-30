@@ -483,16 +483,13 @@ export function RentalDetailPage() {
             {events.map((event) => (
               <li
                 key={event.id}
-                className="flex items-baseline justify-between gap-4 border-b border-white/5 py-2 text-sm last:border-0"
+                className="flex items-start justify-between gap-4 border-b border-white/5 py-2 text-sm last:border-0"
               >
                 <div>
                   <span className="text-zinc-300">{rentalEventTypeLabels[event.type]}</span>
                   {event.comment && <span className="text-zinc-500"> — {event.comment}</span>}
                   {event.amount != null && event.amount > 0 && (
                     <span className="text-zinc-400"> · {formatMoney(event.amount)}</span>
-                  )}
-                  {event.createdByName && (
-                    <span className="text-zinc-600"> · {event.createdByName}</span>
                   )}
                   {event.type === 'extension' && event.fromEndAt && event.toEndAt && (
                     <span className="block text-xs text-zinc-600">
@@ -501,7 +498,12 @@ export function RentalDetailPage() {
                     </span>
                   )}
                 </div>
-                <span className="shrink-0 text-xs text-zinc-500">{formatDateTime(event.date)}</span>
+                <div className="shrink-0 text-right">
+                  <span className="block text-xs text-zinc-500">{formatDateTime(event.date)}</span>
+                  {event.createdByName && (
+                    <span className="block text-xs text-zinc-600">{event.createdByName}</span>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
@@ -571,7 +573,7 @@ export function RentalDetailPage() {
       {/* Завершение аренды (обычный путь): дата приёма, без денежных полей */}
       {completeOpen && (
         <CompleteModal
-          plannedEndAt={rental.plannedEndAt}
+          rental={rental}
           onClose={() => setCompleteOpen(false)}
           onSubmit={async (date) => {
             await api(`/rentals/${id}/complete`, {
@@ -705,6 +707,7 @@ function PaymentHistoryModal({
       })
       await load()
       await onChanged()
+      onClose()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : `Не удалось сохранить ${noun}`)
     } finally {
@@ -794,7 +797,7 @@ function PaymentRow({
           className="input"
           title="Дата оплаты"
         />
-        {dirty && (
+        {dirty ? (
           <button
             type="button"
             disabled={busy}
@@ -804,16 +807,17 @@ function PaymentRow({
           >
             <Check size={16} />
           </button>
+        ) : (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void onDelete(payment)}
+            title={payment.kind === 'expense' ? 'Удалить возврат' : 'Удалить оплату'}
+            className="shrink-0 rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
+          >
+            <Trash2 size={16} />
+          </button>
         )}
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void onDelete(payment)}
-          title="Удалить оплату"
-          className="shrink-0 rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
-        >
-          <Trash2 size={16} />
-        </button>
       </div>
       <p className="mt-1.5 pl-1 text-xs text-zinc-500">
         {payment.kind === 'expense' ? 'Возврат клиенту' : 'Оплата'} · {accountName}
@@ -923,28 +927,70 @@ function PaymentModal({
 }
 
 /** Модалка обычного завершения аренды: простое подтверждение без денежных полей. */
+/** Секунды в единице тарифа позиции (месяц = 30 суток, как на бэке). */
+const UNIT_SECONDS: Record<string, number> = {
+  hour: 3600,
+  day: 86400,
+  week: 7 * 86400,
+  month: 30 * 86400,
+}
+
+/** Обычное завершение: приём строго в календарный день окончания периода (локальный пояс браузера). */
 function CompleteModal({
-  plannedEndAt,
+  rental,
   onClose,
   onSubmit,
 }: {
-  /** Конец оплаченного периода — дата приёма не дальше ±24 часов от него */
-  plannedEndAt: string | null
+  rental: Rental
   onClose: () => void
   onSubmit: (date: string) => Promise<void>
 }) {
-  // По умолчанию — дата окончания периода из заявки (можно поправить в пределах ±24 ч)
+  // По умолчанию — дата окончания периода из заявки
   const [date, setDate] = useState(
-    plannedEndAt ? toLocalInputValue(new Date(plannedEndAt)) : toLocalInputValue(new Date())
+    rental.plannedEndAt
+      ? toLocalInputValue(new Date(rental.plannedEndAt))
+      : toLocalInputValue(new Date())
   )
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // ±24 часа от конца аренды — иначе не даём даже отправить запрос
-  const tooFar =
-    plannedEndAt != null &&
-    date !== '' &&
-    Math.abs(new Date(date).getTime() - new Date(plannedEndAt).getTime()) > 24 * 60 * 60 * 1000
+  const end = rental.plannedEndAt ? new Date(rental.plannedEndAt) : null
+  const picked = date ? new Date(date) : null
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  // 'later' — приём в день позже конца периода (нужна доплата через продление), 'earlier' — раньше
+  const dayShift: 'same' | 'earlier' | 'later' | null =
+    end == null || picked == null
+      ? null
+      : sameDay(picked, end)
+        ? 'same'
+        : picked < end
+          ? 'earlier'
+          : 'later'
+
+  // Доплата за пересрочку: пересчёт по формуле бэка — ceil по единицам тарифа от startAt
+  const startMs = new Date(rental.startAt).getTime()
+  const unitsAt = (item: RentalItem, atMs: number) => {
+    const unitMs = (UNIT_SECONDS[item.tariffUnit] ?? 86400) * 1000
+    return Math.max(1, Math.ceil((atMs - startMs) / unitMs))
+  }
+  const extraDue =
+    dayShift === 'later' && end != null && picked != null
+      ? rental.items.reduce(
+          (sum, item) => sum + item.rate * (unitsAt(item, picked.getTime()) - unitsAt(item, end.getTime())),
+          0
+        )
+      : 0
+  // Подсказка, на сколько продлить: покрыть разрыв единицами тарифа первой позиции
+  const firstItem = rental.items.find((item) => !item.parentItemId)
+  const extendHint =
+    dayShift === 'later' && end != null && picked != null && firstItem
+      ? (() => {
+          const unitSec = UNIT_SECONDS[firstItem.tariffUnit] ?? 86400
+          const units = Math.max(1, Math.ceil((picked.getTime() - end.getTime()) / 1000 / unitSec))
+          return formatDurationValue(units, firstItem.tariffUnit)
+        })()
+      : null
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -952,9 +998,8 @@ function CompleteModal({
       setError('Укажите дату приёма')
       return
     }
-    if (tooFar) {
-      setError('Дата приёма отличается от даты окончания аренды больше чем на 24 часа')
-      return
+    if (dayShift !== 'same' && dayShift !== null) {
+      return // в другой день завершать нельзя — кнопка задизейблена
     }
     setSubmitting(true)
     setError('')
@@ -976,8 +1021,7 @@ function CompleteModal({
           </p>
         )}
         <p className="text-sm text-zinc-400">
-          Все позиции вернутся на склад, аренда завершится. Если нужно вернуть деньги клиенту —
-          закройте это окно и выберите «Вернуть досрочно».
+          Все позиции вернутся на склад, аренда завершится.
         </p>
         <div>
           <label className="mb-1.5 block text-sm text-zinc-400">Дата приёма *</label>
@@ -989,11 +1033,28 @@ function CompleteModal({
             className="input"
           />
           <p className="mt-1.5 text-xs text-zinc-500">
-            Не дальше 24 часов от даты окончания аренды
-            {plannedEndAt ? ` (${formatDateTime(plannedEndAt)})` : ''}
+            Приём — в тот же календарный день, что и конец периода
+            {rental.plannedEndAt ? ` (${formatDateTime(rental.plannedEndAt)})` : ''}
           </p>
         </div>
-        <button type="submit" disabled={submitting || tooFar} className="btn-primary w-full">
+        {dayShift === 'later' && (
+          <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
+            Возврат в другой день — доплата {formatMoney(extraDue)}. Завершить нельзя:
+            {extendHint ? ` продлите аренду на ${extendHint},` : ' продлите аренду,'} примите
+            доплату — после этого аренду можно завершить.
+          </p>
+        )}
+        {dayShift === 'earlier' && (
+          <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
+            Дата приёма раньше дня окончания периода. Если клиент вернул технику раньше и просит
+            деньги — оформите через «Вернуть досрочно».
+          </p>
+        )}
+        <button
+          type="submit"
+          disabled={submitting || dayShift === 'later' || dayShift === 'earlier'}
+          className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-40"
+        >
           <CheckCircle2 size={16} />
           Завершить аренду
         </button>

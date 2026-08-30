@@ -8,7 +8,7 @@ import type { AccountOption, Asset, AssetStatus, AssetType, BikeModel } from '..
 import { Modal } from '../components/Modal'
 import { EmptyState } from '../components/EmptyState'
 import { StatusBadge } from '../components/StatusBadge'
-import { dateInputToIso, formatNumber } from '../lib/format'
+import { dateInputToIso, formatNumber, todayDateInput } from '../lib/format'
 import { assetStatusLabels, assetStatusTones, assetTypeLabels } from '../lib/labels'
 
 const typeIcons: Record<AssetType, LucideIcon> = {
@@ -77,13 +77,10 @@ export function ParkPage() {
   }, [])
 
   const saveAsset = async (form: AssetForm) => {
-    try {
-      await api('/assets', { method: 'POST', body: JSON.stringify(form.body) })
-      await loadAssets()
-      setModal({ open: false })
-    } catch (err) {
-      showError(err, 'Не удалось сохранить актив')
-    }
+    // Ошибку не глотаем — модалка покажет её у себя и останется открытой
+    await api('/assets', { method: 'POST', body: JSON.stringify(form.body) })
+    await loadAssets()
+    setModal({ open: false })
   }
 
   const TypeIcon = typeIcons[tab]
@@ -270,7 +267,7 @@ function AssetModal({
   models: BikeModel[]
   accounts: AccountOption[]
   onClose: () => void
-  onSave: (form: AssetForm) => void
+  onSave: (form: AssetForm) => Promise<void>
 }) {
   const isBike = type === 'bike'
   const isBattery = type === 'battery'
@@ -293,6 +290,8 @@ function AssetModal({
   const [bundled, setBundled] = useState(false)
   const [bundledBikeId, setBundledBikeId] = useState('')
   const [bikes, setBikes] = useState<Asset[]>([])
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     if (!state.open || !canBundle) return
@@ -313,7 +312,7 @@ function AssetModal({
       .catch(() => setBikes([]))
   }, [state.open, canBundle, type])
 
-  const handleSubmit = (event: FormEvent) => {
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
     if (!inventoryNumber.trim()) return
 
@@ -371,7 +370,15 @@ function AssetModal({
         }
       }
     }
-    onSave({ body })
+    setSubmitting(true)
+    setError('')
+    try {
+      await onSave({ body })
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить актив')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -579,6 +586,7 @@ function AssetModal({
             <input
               required
               type="date"
+              max={todayDateInput()}
               value={purchasedAt}
               onChange={(event) => setPurchasedAt(event.target.value)}
               className="input"
@@ -622,8 +630,14 @@ function AssetModal({
           </div>
         )}
 
-        <button type="submit" className="btn-primary w-full">
-          Добавить
+        {error && (
+          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+
+        <button type="submit" disabled={submitting} className="btn-primary w-full">
+          {submitting ? 'Сохраняем…' : 'Добавить'}
         </button>
       </form>
     </Modal>

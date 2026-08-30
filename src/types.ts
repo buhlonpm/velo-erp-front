@@ -355,6 +355,8 @@ export interface RentalEvent {
   type: RentalEventType
   /** ISO-строка */
   date: string
+  /** Дата «по документам» (день оплаты из операции, день выдачи/приёма); null если неприменимо */
+  docDate: string | null
   comment: string
   /** Сумма операции, ₽; null если событие без денег */
   amount: number | null
@@ -403,4 +405,34 @@ export interface Transaction {
   assetId: string | null
   /** Системная операция (покупка/продажа техники) — не редактируется и не удаляется */
   system: boolean
+}
+
+/** Дашборд: счётчики активов одного типа по статусам */
+export interface DashboardTypeStats {
+  type: AssetType
+  total: number
+  available: number
+  mounted: number
+  reserved: number
+  rented: number
+  maintenance: number
+}
+
+/** Дашборд: компактная строка аренды (просроченные / подходящие к концу / последние) */
+export interface DashboardRental {
+  id: string
+  customerName: string
+  composition: string
+  startAt: string
+  plannedEndAt: string | null
+  amount: number
+  status: RentalStatus
+}
+
+/** GET /api/dashboard — весь дашборд одним запросом */
+export interface Dashboard {
+  assets: DashboardTypeStats[]
+  overdue: DashboardRental[]
+  endingSoon: DashboardRental[]
+  latest: DashboardRental[]
 }

@@ -6,7 +6,7 @@ import type { AccountOption, BikeModel, Category, CategoryKind, GpsTracker, SimC
 import { Modal } from '../components/Modal'
 import { PhoneInput } from '../components/PhoneInput'
 import { EmptyState } from '../components/EmptyState'
-import { dateInputToIso, formatDate, formatMoney, formatNumber, isoToDateInput } from '../lib/format'
+import { dateInputToIso, formatDate, formatMoney, formatNumber, isoToDateInput, todayDateInput } from '../lib/format'
 import { categoryKindLabels, tariffUnitLabels, writeOffReasonLabels } from '../lib/labels'
 import { UsersPage } from './UsersPage'
 
@@ -489,6 +489,7 @@ function SimCardModal({
                 <input
                   required
                   type="date"
+                  max={todayDateInput()}
                   value={purchasedAt}
                   onChange={(event) => setPurchasedAt(event.target.value)}
                   className="input"
@@ -538,6 +539,7 @@ function SimCardModal({
                   required
                   disabled={bundledInitial}
                   type="date"
+                  max={todayDateInput()}
                   value={purchasedAt}
                   onChange={(event) => setPurchasedAt(event.target.value)}
                   className="input"
@@ -1019,6 +1021,7 @@ function GpsTrackerModal({
             <input
               required
               type="date"
+              max={todayDateInput()}
               value={purchasedAt}
               onChange={(event) => setPurchasedAt(event.target.value)}
               className="input"

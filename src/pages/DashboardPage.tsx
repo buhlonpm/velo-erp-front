@@ -1,89 +1,69 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
+  BatteryCharging,
   Bike,
-  CheckCircle2,
-  ClipboardList,
   Clock,
-  Wallet,
-  Wrench,
+  Plus,
+  Zap,
 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { api, ApiError } from '../api/client'
-import { useAuth } from '../auth/AuthContext'
-import { hasPermission, PERMISSIONS } from '../auth/permissions'
-import type { Asset, Rental, Transaction } from '../types'
+import type { AssetType, Dashboard, DashboardRental, DashboardTypeStats } from '../types'
 import { StatusBadge } from '../components/StatusBadge'
-import { StatCard } from '../components/StatCard'
-import { EmptyState } from '../components/EmptyState'
-import { formatDateTime, formatMoney, formatOverdue } from '../lib/format'
+import { formatDateTime, formatMoney, formatOverdue, formatRemaining } from '../lib/format'
 import { rentalStatusLabels, rentalStatusTones } from '../lib/labels'
 
-/** Краткое описание состава аренды: «EV-001 + 2» */
-function compositionLabel(rental: Rental): string {
-  const first = rental.items[0]
-  if (!first) return '—'
-  const rest = rental.items.length - 1
-  return `${first.assetName} (${first.inventoryNumber})${rest > 0 ? ` + ${rest}` : ''}`
+const typeLabels: Record<AssetType, string> = {
+  bike: 'Велосипеды',
+  battery: 'Аккумуляторы',
+  charger: 'Зарядники',
 }
 
-export function DashboardPage() {
-  const { user } = useAuth()
-  const canViewFinance = hasPermission(user, PERMISSIONS.FINANCE_VIEW)
+const typeIcons: Record<AssetType, LucideIcon> = {
+  bike: Bike,
+  battery: BatteryCharging,
+  charger: Zap,
+}
 
-  const [assets, setAssets] = useState<Asset[]>([])
-  const [rentals, setRentals] = useState<Rental[]>([])
-  const [monthRevenue, setMonthRevenue] = useState<number | null>(null)
+/** Строки матрицы парка: статус → подпись и цвет точки */
+const statusRows: { key: keyof Omit<DashboardTypeStats, 'type' | 'total' | 'mounted'>; label: string; dot: string }[] = [
+  { key: 'available', label: 'Свободно', dot: 'bg-emerald-400' },
+  { key: 'rented', label: 'В аренде', dot: 'bg-sky-400' },
+  { key: 'reserved', label: 'В резерве', dot: 'bg-amber-400' },
+  { key: 'maintenance', label: 'На обслуживании', dot: 'bg-orange-400' },
+]
+
+export function DashboardPage() {
+  const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    const requests: [Promise<Asset[]>, Promise<Rental[]>, Promise<Transaction[]> | null] = [
-      api<Asset[]>('/assets'),
-      api<Rental[]>('/rentals'),
-      canViewFinance ? api<Transaction[]>('/finance/transactions') : null,
-    ]
-    Promise.all(requests)
-      .then(([assetList, rentalList, transactions]) => {
-        setAssets(assetList)
-        setRentals(rentalList)
-        if (transactions) {
-          // Выручка за текущий месяц: приходы, фильтр по дате локально
-          const now = new Date()
-          const revenue = transactions
-            .filter((t) => {
-              if (t.kind !== 'income') return false
-              const date = new Date(t.date)
-              return (
-                date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()
-              )
-            })
-            .reduce((sum, t) => sum + t.amount, 0)
-          setMonthRevenue(revenue)
-        }
-      })
+    // весь дашборд — одним запросом
+    api<Dashboard>('/dashboard')
+      .then(setDashboard)
       .catch((err) =>
         setError(err instanceof ApiError ? err.message : 'Не удалось загрузить дашборд'),
       )
       .finally(() => setLoading(false))
-  }, [canViewFinance])
-
-  const available = assets.filter((asset) => asset.status === 'available').length
-  const reserved = assets.filter((asset) => asset.status === 'reserved').length
-  const rented = assets.filter((asset) => asset.status === 'rented').length
-  const inMaintenance = assets.filter((asset) => asset.status === 'maintenance').length
-
-  const overdueRentals = rentals.filter((rental) => rental.status === 'overdue')
-  const latestRentals = [...rentals]
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-    .slice(0, 5)
+  }, [])
 
   if (loading) {
     return <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
   }
 
+  const totalAssets = dashboard?.assets.reduce((sum, stats) => sum + stats.total, 0) ?? 0
+
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-zinc-100">Дашборд</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold text-zinc-100">Дашборд</h1>
+        <Link to="/rentals/new" className="btn-primary">
+          <Plus size={16} />
+          Создать аренду
+        </Link>
+      </div>
 
       {error && (
         <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
@@ -91,109 +71,190 @@ export function DashboardPage() {
         </p>
       )}
 
-      {/* Статистика */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
-        <StatCard title="Всего активов" value={String(assets.length)} icon={Bike} />
-        <StatCard title="Свободно" value={String(available)} icon={CheckCircle2} accent />
-        <StatCard title="В резерве" value={String(reserved)} icon={Clock} />
-        <StatCard title="В аренде" value={String(rented)} icon={ClipboardList} />
-        <StatCard title="На обслуживании" value={String(inMaintenance)} icon={Wrench} />
-        {monthRevenue != null && (
-          <StatCard title="Выручка за месяц" value={formatMoney(monthRevenue)} icon={Wallet} accent />
-        )}
-      </div>
-
-      {/* Просроченные аренды */}
-      <section className="panel">
-        <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
-          <h2 className="font-semibold text-zinc-100">Просроченные аренды</h2>
-          {overdueRentals.length > 0 && (
-            <span className="rounded-full bg-red-400/10 px-2.5 py-0.5 text-xs font-medium text-red-400 ring-1 ring-inset ring-red-400/20">
-              {overdueRentals.length}
-            </span>
-          )}
-        </div>
-        {overdueRentals.length === 0 ? (
-          <EmptyState
-            icon={CheckCircle2}
-            title="Просроченных аренд нет"
-            description="Все клиенты возвращают технику вовремя"
-          />
-        ) : (
-          <ul className="divide-y divide-white/5">
-            {overdueRentals.map((rental) => (
-              <li
-                key={rental.id}
-                className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5"
-              >
-                {rental.plannedEndAt && (
-                  <span className="rounded-full bg-red-400/10 px-2.5 py-0.5 text-xs font-medium text-red-400 ring-1 ring-inset ring-red-400/20">
-                    +{formatOverdue(rental.plannedEndAt)}
-                  </span>
-                )}
-                <div className="min-w-0">
-                  <span className="font-medium text-zinc-200">{rental.customerName}</span>
-                  <span className="ml-2 text-sm text-zinc-500">{compositionLabel(rental)}</span>
-                </div>
-                <span className="ml-auto text-sm text-zinc-500">
-                  План: {rental.plannedEndAt ? formatDateTime(rental.plannedEndAt) : '—'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {/* Последние аренды */}
-      <section className="panel">
-        <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
-          <h2 className="font-semibold text-zinc-100">Последние аренды</h2>
-          <Link
-            to="/rentals"
-            className="text-sm text-emerald-400 transition hover:text-emerald-300"
-          >
-            Все аренды →
-          </Link>
-        </div>
-        {latestRentals.length === 0 ? (
-          <EmptyState icon={ClipboardList} title="Аренд пока нет" />
-        ) : (
-          <div className="overflow-x-auto">
+      {dashboard && (
+        <>
+          {/* Парк: матрица «статус × тип» одним блоком */}
+          <section className="panel overflow-hidden">
+            <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
+              <h2 className="font-semibold text-zinc-100">Парк</h2>
+              <span className="text-sm text-zinc-500">всего {totalAssets}</span>
+            </div>
             <table className="w-full">
               <thead>
                 <tr className="border-b border-white/5">
-                  <th className="th">Клиент</th>
-                  <th className="th">Состав</th>
-                  <th className="th">Начало</th>
-                  <th className="th text-right">Сумма</th>
-                  <th className="th">Статус</th>
+                  <th className="th" />
+                  {dashboard.assets.map((stats) => {
+                    const Icon = typeIcons[stats.type]
+                    return (
+                      <th key={stats.type} className="th text-center">
+                        <span className="inline-flex items-center gap-1.5">
+                          <Icon size={14} className="text-zinc-500" />
+                          {typeLabels[stats.type]}
+                          <span className="font-normal text-zinc-600">{stats.total}</span>
+                        </span>
+                      </th>
+                    )
+                  })}
                 </tr>
               </thead>
               <tbody>
-                {latestRentals.map((rental, index) => (
+                {statusRows.map((row) => (
                   <tr
-                    key={rental.id}
-                    className={`transition hover:bg-white/5 ${
-                      index % 2 === 1 ? 'bg-white/[0.02]' : ''
-                    }`}
+                    key={row.key}
+                    className="border-b border-white/5 transition last:border-0 hover:bg-white/[0.03]"
                   >
-                    <td className="td font-medium text-zinc-200">{rental.customerName}</td>
-                    <td className="td">{compositionLabel(rental)}</td>
-                    <td className="td text-zinc-500">{formatDateTime(rental.startAt)}</td>
-                    <td className="td text-right">{formatMoney(rental.amount)}</td>
                     <td className="td">
-                      <StatusBadge
-                        label={rentalStatusLabels[rental.status]}
-                        tone={rentalStatusTones[rental.status]}
-                      />
+                      <span className="inline-flex items-center gap-2 text-zinc-400">
+                        <span className={`size-2 rounded-full ${row.dot}`} />
+                        {row.label}
+                      </span>
                     </td>
+                    {dashboard.assets.map((stats) => (
+                      <td key={stats.type} className="td text-center">
+                        <span
+                          className={
+                            stats[row.key] > 0
+                              ? 'text-base font-semibold text-zinc-100'
+                              : 'text-sm text-zinc-700'
+                          }
+                        >
+                          {stats[row.key]}
+                        </span>
+                      </td>
+                    ))}
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-        )}
-      </section>
+          </section>
+
+          {/* Просроченные аренды — только когда есть */}
+          {dashboard.overdue.length > 0 && (
+            <RentalSection
+              title="Просроченные аренды"
+              count={dashboard.overdue.length}
+              tone="red"
+              rentals={dashboard.overdue}
+              badge={(rental) =>
+                rental.plannedEndAt ? `+${formatOverdue(rental.plannedEndAt)}` : '—'
+              }
+            />
+          )}
+
+          {/* Подходящие к концу (осталось < 20% срока) — только когда есть */}
+          {dashboard.endingSoon.length > 0 && (
+            <RentalSection
+              title="Подходят к концу"
+              count={dashboard.endingSoon.length}
+              tone="amber"
+              rentals={dashboard.endingSoon}
+              badge={(rental) =>
+                rental.plannedEndAt ? `осталось ${formatRemaining(rental.plannedEndAt)}` : '—'
+              }
+            />
+          )}
+
+          {/* Последние аренды */}
+          <section className="panel">
+            <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
+              <h2 className="font-semibold text-zinc-100">Последние аренды</h2>
+              <Link
+                to="/rentals"
+                className="text-sm text-emerald-400 transition hover:text-emerald-300"
+              >
+                Все аренды →
+              </Link>
+            </div>
+            {dashboard.latest.length === 0 ? (
+              <p className="px-5 py-6 text-sm text-zinc-500">Аренд пока нет</p>
+            ) : (
+              <ul className="divide-y divide-white/5">
+                {dashboard.latest.map((rental) => (
+                  <li key={rental.id}>
+                    <Link
+                      to={`/rentals/${rental.id}`}
+                      className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5 transition hover:bg-white/[0.03]"
+                    >
+                      <StatusBadge
+                        label={rentalStatusLabels[rental.status]}
+                        tone={rentalStatusTones[rental.status]}
+                      />
+                      <div className="min-w-0">
+                        <span className="font-medium text-zinc-200">{rental.customerName}</span>
+                        <span className="ml-2 text-sm text-zinc-500">{rental.composition}</span>
+                      </div>
+                      <span className="ml-auto text-right">
+                        <span className="block text-sm font-medium text-zinc-200">
+                          {formatMoney(rental.amount)}
+                        </span>
+                        <span className="block text-xs text-zinc-600">
+                          {formatDateTime(rental.startAt)}
+                        </span>
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </>
+      )}
     </div>
+  )
+}
+
+/** Список аренд дашборда (просроченные / подходящие к концу) */
+function RentalSection({
+  title,
+  count,
+  tone,
+  rentals,
+  badge,
+}: {
+  title: string
+  count: number
+  tone: 'red' | 'amber'
+  rentals: DashboardRental[]
+  badge: (rental: DashboardRental) => string
+}) {
+  const badgeClass =
+    tone === 'red'
+      ? 'bg-red-400/10 text-red-400 ring-red-400/20'
+      : 'bg-amber-400/10 text-amber-400 ring-amber-400/20'
+  return (
+    <section className="panel">
+      <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
+        <h2 className="font-semibold text-zinc-100">{title}</h2>
+        <span
+          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${badgeClass}`}
+        >
+          {count}
+        </span>
+      </div>
+      <ul className="divide-y divide-white/5">
+        {rentals.map((rental) => (
+          <li key={rental.id}>
+            <Link
+              to={`/rentals/${rental.id}`}
+              className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5 transition hover:bg-white/[0.03]"
+            >
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${badgeClass}`}
+              >
+                <Clock size={12} />
+                {badge(rental)}
+              </span>
+              <div className="min-w-0">
+                <span className="font-medium text-zinc-200">{rental.customerName}</span>
+                <span className="ml-2 text-sm text-zinc-500">{rental.composition}</span>
+              </div>
+              <span className="ml-auto text-sm text-zinc-500">
+                План: {rental.plannedEndAt ? formatDateTime(rental.plannedEndAt) : '—'}
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }

@@ -50,6 +50,11 @@ export function isoToDateInput(iso: string | null | undefined): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
+/** Сегодня (локальная дата) в формате date-input — для max у дат, которые нельзя ставить в будущем. */
+export function todayDateInput(): string {
+  return isoToDateInput(new Date().toISOString())
+}
+
 export const formatMoney = (value: number) => moneyFormatter.format(value)
 
 export const formatNumber = (value: number) => numberFormatter.format(value)
@@ -60,10 +65,28 @@ export function hoursOverdue(plannedEndAt: string): number {
   return diff > 0 ? Math.floor(diff / 3_600_000) : 0
 }
 
-/** Человекочитаемая длительность просрочки: «2 дн. 5 ч.» / «7 ч.» */
+/** Человекочитаемое время до момента в будущем: «2 дн. 5 ч.» / «7 ч.» / «12 мин.» */
+export function formatRemaining(until: string): string {
+  const diff = new Date(until).getTime() - Date.now()
+  if (diff <= 0) return '—'
+  const minutes = Math.floor(diff / 60_000)
+  if (minutes < 60) return minutes > 0 ? `${minutes} мин.` : 'менее минуты'
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} ч.`
+  const days = Math.floor(hours / 24)
+  const rest = hours % 24
+  return rest === 0 ? `${days} дн.` : `${days} дн. ${rest} ч.`
+}
+
+/** Человекочитаемая длительность просрочки: «2 дн. 5 ч.» / «7 ч.» / «12 мин.» */
 export function formatOverdue(plannedEndAt: string): string {
-  const hours = hoursOverdue(plannedEndAt)
-  if (hours <= 0) return '—'
+  const diff = Date.now() - new Date(plannedEndAt).getTime()
+  if (diff <= 0) return '—'
+  const hours = Math.floor(diff / 3_600_000)
+  if (hours === 0) {
+    const minutes = Math.floor(diff / 60_000)
+    return minutes > 0 ? `${minutes} мин.` : 'менее минуты'
+  }
   const days = Math.floor(hours / 24)
   const rest = hours % 24
   if (days === 0) return `${rest} ч.`
