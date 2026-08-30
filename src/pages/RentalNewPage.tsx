@@ -24,10 +24,8 @@ interface ChildRow {
 interface ItemRow {
   key: number
   assetId: string
-  /** Цена, ₽ за единицу срока аренды (строка из input) */
+  /** Цена, ₽ за единицу срока аренды (у rent_to_own — ₽/нед) */
   rate: string
-  /** Единица тарифа — только для rent_to_own (у rent она = единице срока аренды) */
-  tariffUnit: TariffUnit | ''
   children: ChildRow[]
 }
 
@@ -36,9 +34,11 @@ const newRow = (): ItemRow => ({
   key: ++rowKey,
   assetId: '',
   rate: '',
-  tariffUnit: '',
   children: [],
 })
+
+/** Сроки выкупа в неделях (бэк принимает только эти) */
+const TERM_WEEKS_OPTIONS = [13, 26, 52] as const
 
 export function RentalNewPage() {
   const navigate = useNavigate()
@@ -55,7 +55,11 @@ export function RentalNewPage() {
   // единица срока — она же единица тарифа всех позиций
   const [duration, setDuration] = useState('')
   const [durationUnit, setDurationUnit] = useState<TariffUnit>('day')
+  // Под выкуп: срок в неделях и итог выкупа; недельный платёж = сумма цен позиций (₽/нед)
+  const [termWeeks, setTermWeeks] = useState<number>(TERM_WEEKS_OPTIONS[0])
   const [buyoutPrice, setBuyoutPrice] = useState('')
+  /** Итог правился вручную (только при одной позиции) — не пересчитываем его из цен позиций */
+  const [buyoutTouched, setBuyoutTouched] = useState(false)
   const [comment, setComment] = useState('')
   const [rows, setRows] = useState<ItemRow[]>([newRow()])
   const [submitting, setSubmitting] = useState(false)
@@ -105,6 +109,78 @@ export function RentalNewPage() {
     )
   }
 
+  // Под выкуп цены позиций — ₽/нед: при переключении kind переподставляем из справочника
+  // модели по неделе и сбрасываем ручную правку итога (он снова = сумме цен позиций × недель)
+  const handleKindChange = (value: RentalKind) => {
+    setKind(value)
+    if (value === 'rent_to_own') {
+      setBuyoutTouched(false)
+      setRows((prev) =>
+        prev.map((row) => {
+          if (!row.assetId) return row
+          const price = catalogPrice(row.assetId, 'week')
+          return price !== undefined ? { ...row, rate: String(price) } : row
+        }),
+      )
+    }
+  }
+
+  // Под выкуп: недельный платёж = сумма цен корневых позиций (₽/нед); итог = платёж × недель.
+  // При одной позиции итог можно править вручную (цена позиции пересчитается как итог ÷ недель);
+  // при нескольких позициях итог только вычисляется — править надо цены самих позиций.
+  const chosenRowsList = rows.filter((row) => row.assetId)
+  const singleChosenRow = chosenRowsList.length === 1 ? chosenRowsList[0] : null
+  const weeklyFromRows = chosenRowsList
+    .filter((row) => row.rate.trim())
+    .reduce((acc, row) => acc + Number(row.rate), 0)
+
+  useEffect(() => {
+    if (kind !== 'rent_to_own') return
+    if (chosenRowsList.length !== 1) {
+      setBuyoutTouched(false)
+      setBuyoutPrice(weeklyFromRows > 0 ? String(weeklyFromRows * termWeeks) : '')
+    } else if (!buyoutTouched) {
+      setBuyoutPrice(weeklyFromRows > 0 ? String(weeklyFromRows * termWeeks) : '')
+    }
+  }, [kind, buyoutTouched, chosenRowsList.length, weeklyFromRows, termWeeks])
+
+  // Ручная правка итога (одна позиция) → цена позиции = round(итог / недель)
+  const handleBuyoutChange = (value: string) => {
+    setBuyoutTouched(true)
+    setBuyoutPrice(value)
+    if (singleChosenRow) {
+      updateRow(singleChosenRow.key, {
+        rate: Number(value) > 0 ? String(Math.round(Number(value) / termWeeks)) : '',
+      })
+    }
+  }
+
+  // Правка цены позиции — итог снова следует за ценами позиций
+  const handleRateChange = (row: ItemRow, value: string) => {
+    setBuyoutTouched(false)
+    updateRow(row.key, { rate: value })
+  }
+
+  // Смена срока: итог пересчитывается от цен позиций (случай без ручной правки покроет useEffect выше)
+  const handleTermWeeksChange = (weeks: number) => {
+    setTermWeeks(weeks)
+    setBuyoutTouched(false)
+  }
+
+  // Превью графика: N платежей по X ₽, первый — в день начала, последний — startAt + (N-1)×7 дней
+  const schedulePreview =
+    kind === 'rent_to_own' && startAt && Number(buyoutPrice) > 0
+      ? (() => {
+          const first = new Date(startAt)
+          const last = new Date(first.getTime() + (termWeeks - 1) * 7 * 86_400_000)
+          const weekly = Math.round(Number(buyoutPrice) / termWeeks)
+          return (
+            `${termWeeks} платеж${termWeeks === 52 ? 'а' : 'ей'} по ${formatMoney(weekly)}, ` +
+            `первый — ${formatDateTime(first.toISOString())}, последний — ${formatDateTime(last.toISOString())}`
+          )
+        })()
+      : null
+
   // Общая сумма аренды = срок × сумма цен позиций (единица тарифа = единице срока; комплект 0 ₽)
   const totalAmount =
     kind === 'rent' && Number(duration) > 0
@@ -123,11 +199,14 @@ export function RentalNewPage() {
   // При выборе велосипеда дотягиваем смонтированные АКБ и зарядник как дочерние строки
   const handleAssetSelect = async (row: ItemRow, assetId: string) => {
     const asset = availableAssets.find((a) => a.id === assetId)
-    const price = assetId ? catalogPrice(assetId, durationUnit) : undefined
+    // Под выкуп единица тарифа всегда неделя — цену берём из недельного тарифа модели
+    const price = assetId
+      ? catalogPrice(assetId, kind === 'rent_to_own' ? 'week' : durationUnit)
+      : undefined
+    setBuyoutTouched(false)
     updateRow(row.key, {
       assetId,
       rate: price !== undefined ? String(price) : '',
-      tariffUnit: '',
       children: [],
     })
     if (asset?.type === 'bike') {
@@ -168,22 +247,21 @@ export function RentalNewPage() {
       return
     }
     if (kind === 'rent_to_own') {
-      if (!buyoutPrice.trim()) {
-        setError('Укажите цену выкупа')
+      if (!TERM_WEEKS_OPTIONS.includes(termWeeks as (typeof TERM_WEEKS_OPTIONS)[number])) {
+        setError('Выберите срок выкупа: 13, 26 или 52 недели')
         return
       }
-      if (chosenRows.some((row) => !row.tariffUnit)) {
-        setError('Выберите единицу тарифа (час/день/неделя/месяц) для каждой позиции')
+      if (!buyoutPrice.trim() || Number.isNaN(Number(buyoutPrice)) || Number(buyoutPrice) <= 0) {
+        setError('Укажите итоговую сумму выкупа (больше 0)')
         return
       }
     }
 
     // Дочерний комплект (АКБ/зарядник) не шлём — сервер подтянет его сам с тарифом 0.
-    // Единицу тарифа при rent не шлём — сервер ставит единицу срока аренды.
+    // Единицу тарифа не шлём: у rent она = единице срока аренды, у rent_to_own — всегда week.
     const items = chosenRows.map((row) => ({
       assetId: row.assetId,
       rate: Number(row.rate),
-      ...(kind === 'rent_to_own' ? { tariffUnit: row.tariffUnit } : {}),
     }))
 
     setSubmitting(true)
@@ -196,7 +274,7 @@ export function RentalNewPage() {
           kind,
           ...(startAt ? { startAt: new Date(startAt).toISOString() } : {}),
           ...(kind === 'rent' ? { duration: Number(duration), durationUnit } : {}),
-          ...(kind === 'rent_to_own' ? { buyoutPrice: Number(buyoutPrice) } : {}),
+          ...(kind === 'rent_to_own' ? { buyoutPrice: Number(buyoutPrice), termWeeks } : {}),
           ...(comment.trim() ? { comment: comment.trim() } : {}),
           items,
         }),
@@ -261,7 +339,7 @@ export function RentalNewPage() {
                 <button
                   key={value}
                   type="button"
-                  onClick={() => setKind(value)}
+                  onClick={() => handleKindChange(value)}
                   className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
                     kind === value
                       ? 'bg-emerald-400/10 text-emerald-400'
@@ -317,18 +395,63 @@ export function RentalNewPage() {
                 </div>
               ) : (
                 <div>
-                  <label className="mb-1.5 block text-sm text-zinc-400">Цена выкупа, ₽</label>
-                  <input
-                    type="number"
-                    min={1}
-                    required
-                    value={buyoutPrice}
-                    onChange={(event) => setBuyoutPrice(event.target.value)}
-                    className="input"
-                  />
+                  <label className="mb-1.5 block text-sm text-zinc-400">Срок выкупа *</label>
+                  <div className="flex gap-1 rounded-lg border border-white/10 p-1">
+                    {TERM_WEEKS_OPTIONS.map((weeks) => (
+                      <button
+                        key={weeks}
+                        type="button"
+                        onClick={() => handleTermWeeksChange(weeks)}
+                        className={`flex-1 rounded-md px-2 py-1.5 text-sm font-medium transition ${
+                          termWeeks === weeks
+                            ? 'bg-emerald-400/10 text-emerald-400'
+                            : 'text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {weeks} нед.
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
+
+            {/* Под выкуп: недельный платёж — сумма цен позиций; итог правится только при одной позиции */}
+            {kind === 'rent_to_own' && (
+              <div className="space-y-3 rounded-lg border border-amber-400/30 bg-amber-400/5 p-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="mb-1.5 block text-sm text-zinc-400">Платёж в неделю</label>
+                    <p className="px-3 py-2 text-lg font-semibold text-zinc-100">
+                      {weeklyFromRows > 0 ? formatMoney(weeklyFromRows) : '—'}
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm text-zinc-400">Итого выкуп, ₽ *</label>
+                    <input
+                      type="number"
+                      min={1}
+                      required
+                      value={buyoutPrice}
+                      onChange={(event) => handleBuyoutChange(event.target.value)}
+                      disabled={!singleChosenRow}
+                      className="input disabled:cursor-not-allowed disabled:opacity-50"
+                      title={
+                        singleChosenRow
+                          ? 'Итог выкупа — цена позиции пересчитается (итог ÷ недель)'
+                          : 'Итог = сумма цен позиций × срок — правьте цены самих позиций'
+                      }
+                    />
+                  </div>
+                </div>
+                {schedulePreview && <p className="text-xs text-zinc-500">{schedulePreview}</p>}
+                <p className="text-xs text-zinc-500">
+                  {singleChosenRow
+                    ? 'Недельный платёж — это цена позиции; правка итога пересчитает её. Оплата принимается в карточке аренды после создания.'
+                    : 'Недельный платёж и итог считаются из цен позиций — чтобы изменить, поправьте цену в позиции. Оплата принимается в карточке аренды после создания.'}
+                </p>
+              </div>
+            )}
 
             {/* Общая сумма аренды — вычисляемая, меняется ценами позиций; оплата — в карточке аренды */}
             {kind === 'rent' && (
@@ -371,12 +494,8 @@ export function RentalNewPage() {
 
             <div className="space-y-3">
               {rows.map((row) => {
-                const unitLabel =
-                  kind === 'rent'
-                    ? tariffUnitLabels[durationUnit]
-                    : row.tariffUnit
-                      ? tariffUnitLabels[row.tariffUnit]
-                      : '—'
+                // У rent_to_own единица тарифа всегда неделя (сервер проставляет сам)
+                const unitLabel = kind === 'rent' ? tariffUnitLabels[durationUnit] : 'нед'
                 return (
                   <div key={row.key} className="rounded-lg border border-white/10 p-3">
                     <div className="flex items-center gap-2">
@@ -396,32 +515,13 @@ export function RentalNewPage() {
                             </option>
                           ))}
                       </select>
-                      {/* Единица тарифа = единице срока аренды; выбор только у rent_to_own (срока нет) */}
-                      {kind === 'rent_to_own' && row.assetId && (
-                        <select
-                          value={row.tariffUnit}
-                          onChange={(event) =>
-                            updateRow(row.key, { tariffUnit: event.target.value as TariffUnit })
-                          }
-                          className="input w-32 shrink-0"
-                          title="Единица тарифа"
-                        >
-                          <option value="" disabled>
-                            Единица…
-                          </option>
-                          {(Object.keys(tariffUnitLabels) as TariffUnit[]).map((unit) => (
-                            <option key={unit} value={unit}>
-                              {tariffUnitLabels[unit]}
-                            </option>
-                          ))}
-                        </select>
-                      )}
+                      {/* Единица тарифа = единице срока аренды; у rent_to_own — всегда неделя */}
                       <input
                         required
                         type="number"
                         min={0}
                         value={row.rate}
-                        onChange={(event) => updateRow(row.key, { rate: event.target.value })}
+                        onChange={(event) => handleRateChange(row, event.target.value)}
                         className="input w-28 shrink-0"
                         placeholder="₽"
                         title={`Цена, ₽/${unitLabel} (обязательно)`}

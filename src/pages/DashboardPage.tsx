@@ -128,29 +128,31 @@ export function DashboardPage() {
             </table>
           </section>
 
-          {/* Просроченные аренды — только когда есть */}
+          {/* Просроченные аренды — только когда есть; у rent_to_own просрочка считается от ближайшего платежа */}
           {dashboard.overdue.length > 0 && (
             <RentalSection
               title="Просроченные аренды"
               count={dashboard.overdue.length}
               tone="red"
               rentals={dashboard.overdue}
-              badge={(rental) =>
-                rental.plannedEndAt ? `+${formatOverdue(rental.plannedEndAt)}` : '—'
-              }
+              badge={(rental) => {
+                const anchor = rental.nextPaymentDue ?? rental.plannedEndAt
+                return anchor ? `+${formatOverdue(anchor)}` : '—'
+              }}
             />
           )}
 
-          {/* Подходящие к концу (осталось < 20% срока) — только когда есть */}
+          {/* Подходящие к концу (осталось < 20% срока) — только когда есть; у rent_to_own — «к оплате» по графику */}
           {dashboard.endingSoon.length > 0 && (
             <RentalSection
               title="Подходят к концу"
               count={dashboard.endingSoon.length}
               tone="amber"
               rentals={dashboard.endingSoon}
-              badge={(rental) =>
-                rental.plannedEndAt ? `осталось ${formatRemaining(rental.plannedEndAt)}` : '—'
-              }
+              badge={(rental) => {
+                const anchor = rental.nextPaymentDue ?? rental.plannedEndAt
+                return anchor ? `осталось ${formatRemaining(anchor)}` : '—'
+              }}
             />
           )}
 
@@ -249,7 +251,9 @@ function RentalSection({
                 <span className="ml-2 text-sm text-zinc-500">{rental.composition}</span>
               </div>
               <span className="ml-auto text-sm text-zinc-500">
-                План: {rental.plannedEndAt ? formatDateTime(rental.plannedEndAt) : '—'}
+                {rental.nextPaymentDue
+                  ? `Платёж: ${formatDateTime(rental.nextPaymentDue)}`
+                  : `План: ${rental.plannedEndAt ? formatDateTime(rental.plannedEndAt) : '—'}`}
               </span>
             </Link>
           </li>

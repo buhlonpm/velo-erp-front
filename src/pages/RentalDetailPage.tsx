@@ -5,7 +5,7 @@ import { ArrowLeft, Banknote, Check, CheckCircle2, ClipboardList, History, KeyRo
 import { api, ApiError } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission, PERMISSIONS } from '../auth/permissions'
-import type { AccountOption, Customer, Rental, RentalEvent, RentalExtension, RentalItem, TariffUnit, Transaction } from '../types'
+import type { AccountOption, Customer, OverpaymentStrategy, Rental, RentalEvent, RentalExtension, RentalItem, RentalScheduleItem, TariffUnit, Transaction } from '../types'
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
 import { StatusBadge } from '../components/StatusBadge'
@@ -18,11 +18,28 @@ import {
   rentalStatusTones,
   tariffUnitLabels,
 } from '../lib/labels'
+import type { Tone } from '../lib/labels'
 
 /** Значение для input datetime-local из Date (в локальной TZ) */
 function toLocalInputValue(date: Date): string {
   const offset = date.getTimezoneOffset() * 60_000
   return new Date(date.getTime() - offset).toISOString().slice(0, 16)
+}
+
+/** Подписи и тоны статусов строк графика платежей (rent_to_own) */
+const scheduleStatusLabels: Record<RentalScheduleItem['status'], string> = {
+  paid: 'Оплачен',
+  partial: 'Частично',
+  next: 'Следующий',
+  pending: 'Ожидает',
+  overdue: 'Просрочен',
+}
+const scheduleStatusTones: Record<RentalScheduleItem['status'], Tone> = {
+  paid: 'emerald',
+  partial: 'amber',
+  next: 'sky',
+  pending: 'zinc',
+  overdue: 'red',
 }
 
 export function RentalDetailPage() {
@@ -45,6 +62,7 @@ export function RentalDetailPage() {
   const [earlyReturnOpen, setEarlyReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
   const [editExtension, setEditExtension] = useState<RentalExtension | null>(null)
+  const [buyoutEditOpen, setBuyoutEditOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
 
   const showError = (err: unknown, fallback: string) =>
@@ -139,6 +157,19 @@ export function RentalDetailPage() {
     (isCompleted || rental.status === 'cancelled')
   const canExtend = isActive && rental.kind === 'rent' && rental.plannedEndAt != null
   const remaining = Math.max(0, rental.amount - rental.paidAmount)
+  // Договор под выкуп: график платежей, ближайший непогашенный платёж и его остаток
+  const isBuyout = rental.kind === 'rent_to_own'
+  const schedule = rental.schedule ?? []
+  const nextUnpaid = schedule.find((item) => item.status !== 'paid')
+  const nextPaymentRemaining =
+    isBuyout && nextUnpaid ? Math.max(0, nextUnpaid.amount - nextUnpaid.paidPart) : null
+  // Недельный платёж для инфоблока: сумма ближайшего непогашенного; всё оплачено — buyout/termWeeks
+  const weeklyPayment =
+    nextUnpaid?.amount ??
+    (isBuyout && rental.buyoutPrice != null && rental.termWeeks
+      ? Math.round(rental.buyoutPrice / rental.termWeeks)
+      : null)
+  const schedulePaidCount = schedule.filter((item) => item.status === 'paid').length
   // Группировка комплекта: верхнеуровневые позиции + их дочерние АКБ/зарядники
   const topLevelItems = rental.items.filter((item) => !item.parentItemId)
   const childrenOf = (parentId: string): RentalItem[] =>
@@ -177,9 +208,13 @@ export function RentalDetailPage() {
 
       {rental.status === 'overdue' && (
         <p className="rounded-lg border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm font-medium text-red-400">
-          Аренда просрочена
-          {rental.plannedEndAt ? ` на ${formatOverdue(rental.plannedEndAt)}` : ''} — продлите её
-          или свяжитесь с клиентом
+          {isBuyout
+            ? `Просрочен платёж по графику${
+                rental.nextPaymentDue ? ` на ${formatOverdue(rental.nextPaymentDue)}` : ''
+              } — свяжитесь с клиентом`
+            : `Аренда просрочена${
+                rental.plannedEndAt ? ` на ${formatOverdue(rental.plannedEndAt)}` : ''
+              } — продлите её или свяжитесь с клиентом`}
         </p>
       )}
 
@@ -297,10 +332,34 @@ export function RentalDetailPage() {
                 </div>
               </>
             )}
+            {isBuyout && rental.termWeeks != null && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-zinc-500">Срок выкупа</dt>
+                <dd className="text-zinc-300">{rental.termWeeks} нед.</dd>
+              </div>
+            )}
+            {isBuyout && weeklyPayment != null && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-zinc-500">Платёж в неделю</dt>
+                <dd className="text-zinc-300">{formatMoney(weeklyPayment)}</dd>
+              </div>
+            )}
             {rental.buyoutPrice != null && (
               <div className="flex justify-between gap-4">
                 <dt className="text-zinc-500">Цена выкупа</dt>
-                <dd className="text-zinc-300">{formatMoney(rental.buyoutPrice)}</dd>
+                <dd className="flex items-center gap-2 text-zinc-300">
+                  {formatMoney(rental.buyoutPrice)}
+                  {isBuyout && (isDraft || isActive) && (
+                    <button
+                      type="button"
+                      onClick={() => setBuyoutEditOpen(true)}
+                      title="Изменить сумму выкупа"
+                      className="rounded-lg p-1 text-zinc-500 transition hover:bg-white/5 hover:text-emerald-400"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                  )}
+                </dd>
               </div>
             )}
           </div>
@@ -346,6 +405,58 @@ export function RentalDetailPage() {
         )}
       </section>
 
+      {/* График платежей (rent_to_own): показываем всегда, у завершённой/отменённой — как историю */}
+      {isBuyout && schedule.length > 0 && (
+        <section className="panel overflow-hidden">
+          <div className="border-b border-white/5 px-5 py-4">
+            <h2 className="font-semibold text-zinc-100">
+              График платежей{' '}
+              <span className="text-sm font-normal text-zinc-500">
+                · оплачено {schedulePaidCount} из {schedule.length}
+              </span>
+            </h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-white/5">
+                  <th className="th w-12">№</th>
+                  <th className="th">Дата</th>
+                  <th className="th text-right">Сумма</th>
+                  <th className="th text-right">Погашено</th>
+                  <th className="th">Статус</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schedule.map((item, index) => (
+                  <tr
+                    key={item.seq}
+                    className={`border-b border-white/5 transition last:border-0 hover:bg-white/[0.03] ${
+                      index % 2 === 1 ? 'bg-white/[0.02]' : ''
+                    }`}
+                  >
+                    <td className="td text-zinc-500">{item.seq}</td>
+                    <td className="td text-zinc-300">{formatDateTime(item.dueDate)}</td>
+                    <td className="td text-right text-zinc-200">{formatMoney(item.amount)}</td>
+                    <td className="td text-right text-zinc-500">
+                      {item.paidPart > 0
+                        ? `${formatMoney(item.paidPart)} из ${formatMoney(item.amount)}`
+                        : '—'}
+                    </td>
+                    <td className="td">
+                      <StatusBadge
+                        label={scheduleStatusLabels[item.status]}
+                        tone={scheduleStatusTones[item.status]}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {/* Действия по статусу */}
       {(isDraft || isActive) && (
         <div className="flex flex-wrap items-center gap-3">
@@ -371,7 +482,8 @@ export function RentalDetailPage() {
           )}
           {isActive && (
             <>
-              {/* Завершение — только после полной оплаты (бэк тоже проверяет, 409) */}
+              {/* Завершение — только после полной оплаты (бэк тоже проверяет, 409);
+                  у rent_to_own это «выкуп»: техника уходит клиенту навсегда */}
               <button
                 type="button"
                 onClick={() => setCompleteOpen(true)}
@@ -380,7 +492,7 @@ export function RentalDetailPage() {
                 className="btn-primary disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <CheckCircle2 size={16} />
-                Завершить аренду
+                {isBuyout ? 'Завершить выкуп' : 'Завершить аренду'}
               </button>
               {canExtend && (
                 <button
@@ -391,7 +503,23 @@ export function RentalDetailPage() {
                   Продлить аренду
                 </button>
               )}
-              {remaining > 0 ? (
+              {isBuyout ? (
+                <>
+                  {/* Расторжение не требует полной оплаты, внесённые платежи не возвращаются */}
+                  <button
+                    type="button"
+                    onClick={() => setEarlyReturnOpen(true)}
+                    className="text-xs text-zinc-500 underline transition hover:text-zinc-300"
+                  >
+                    Расторгнуть договор
+                  </button>
+                  {remaining > 0 && (
+                    <span className="text-xs text-zinc-600" title={`Остаток ${formatMoney(remaining)}`}>
+                      Завершение выкупа — после полной оплаты
+                    </span>
+                  )}
+                </>
+              ) : remaining > 0 ? (
                 <span className="text-xs text-zinc-600" title={`Остаток ${formatMoney(remaining)}`}>
                   Завершение и возврат — после полной оплаты
                 </span>
@@ -511,22 +639,40 @@ export function RentalDetailPage() {
         </div>
       )}
 
-      {/* Приём оплаты: сумма (по умолчанию остаток), дата, счёт */}
+      {/* Приём оплаты: сумма (по умолчанию — остаток ближайшего платежа у rent_to_own, иначе остаток по аренде), дата, счёт */}
       {paymentOpen && (
         <PaymentModal
           remaining={remaining}
+          nextPaymentRemaining={nextPaymentRemaining}
           accounts={accounts}
           onClose={() => setPaymentOpen(false)}
-          onSubmit={async (amount, date, accountId) => {
+          onSubmit={async (amount, date, accountId, overpaymentStrategy) => {
             await api(`/rentals/${id}/payments`, {
               method: 'POST',
               body: JSON.stringify({
                 amount: Number(amount),
                 accountId,
                 ...(date ? { date: new Date(date).toISOString() } : {}),
+                ...(overpaymentStrategy ? { overpaymentStrategy } : {}),
               }),
             })
             setPaymentOpen(false)
+            await loadRental()
+          }}
+        />
+      )}
+
+      {/* Правка суммы выкупа (rent_to_own, черновик/активная): график пересчитается на бэке */}
+      {buyoutEditOpen && (
+        <BuyoutPriceModal
+          rental={rental}
+          onClose={() => setBuyoutEditOpen(false)}
+          onSubmit={async (buyoutPrice) => {
+            await api(`/rentals/${rental.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ buyoutPrice: Number(buyoutPrice) }),
+            })
+            setBuyoutEditOpen(false)
             await loadRental()
           }}
         />
@@ -867,23 +1013,42 @@ function PaymentRow({
   )
 }
 
-/** Модалка приёма оплаты: сумма (по умолчанию — остаток), дата и счёт платежа. */
+/** Модалка приёма оплаты: сумма, дата и счёт платежа; у rent_to_own — выбор стратегии переплаты. */
 function PaymentModal({
   remaining,
+  nextPaymentRemaining,
   accounts,
   onClose,
   onSubmit,
 }: {
   remaining: number
+  /** Остаток по ближайшему непогашенному платежу графика (rent_to_own); null — обычная аренда */
+  nextPaymentRemaining: number | null
   accounts: AccountOption[]
   onClose: () => void
-  onSubmit: (amount: string, date: string, accountId: string) => Promise<void>
+  onSubmit: (
+    amount: string,
+    date: string,
+    accountId: string,
+    overpaymentStrategy: OverpaymentStrategy | null,
+  ) => Promise<void>
 }) {
-  const [amount, setAmount] = useState(remaining > 0 ? String(remaining) : '')
+  // Дефолтная сумма: у rent_to_own — остаток ближайшего платежа, иначе остаток по аренде
+  const defaultAmount =
+    nextPaymentRemaining != null && nextPaymentRemaining > 0
+      ? String(nextPaymentRemaining)
+      : remaining > 0
+        ? String(remaining)
+        : ''
+  const [amount, setAmount] = useState(defaultAmount)
   const [date, setDate] = useState(() => toLocalInputValue(new Date()))
   const [accountId, setAccountId] = useState('')
+  const [strategy, setStrategy] = useState<OverpaymentStrategy | null>(null)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  // Выбор стратегии — только когда платёж перекрывает остаток ближайшего платежа графика
+  const showStrategy = nextPaymentRemaining != null && Number(amount) > nextPaymentRemaining
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -898,13 +1063,32 @@ function PaymentModal({
     setSubmitting(true)
     setError('')
     try {
-      await onSubmit(amount, date, accountId)
+      // Стратегию шлём, только если переплата есть и выбран не-дефолтный вариант
+      await onSubmit(amount, date, accountId, showStrategy ? strategy : null)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось принять оплату')
     } finally {
       setSubmitting(false)
     }
   }
+
+  const strategyOptions: { value: OverpaymentStrategy | null; label: string; hint: string }[] = [
+    {
+      value: null,
+      label: 'Зачесть в ближайшие платежи',
+      hint: 'клиент может пропустить оплаченные недели',
+    },
+    {
+      value: 'shorten_term',
+      label: 'Сократить срок',
+      hint: 'платёж прежний, договор закончится раньше',
+    },
+    {
+      value: 'reduce_next',
+      label: 'Уменьшить следующие платежи',
+      hint: 'срок прежний, недельный платёж станет меньше',
+    },
+  ]
 
   return (
     <Modal open title="Принять оплату" onClose={onClose}>
@@ -924,12 +1108,47 @@ function PaymentModal({
             onChange={(event) => setAmount(event.target.value)}
             className="input"
           />
-          {remaining > 0 && (
+          {nextPaymentRemaining != null && nextPaymentRemaining > 0 ? (
             <p className="mt-1.5 text-xs text-zinc-500">
-              Остаток к оплате: {formatMoney(remaining)}
+              Ближайший платёж по графику: {formatMoney(nextPaymentRemaining)}
             </p>
+          ) : (
+            remaining > 0 && (
+              <p className="mt-1.5 text-xs text-zinc-500">
+                Остаток к оплате: {formatMoney(remaining)}
+              </p>
+            )
           )}
         </div>
+        {showStrategy && (
+          <div>
+            <p className="mb-1.5 text-sm text-zinc-400">Переплата по графику</p>
+            <div className="space-y-2">
+              {strategyOptions.map((option) => (
+                <label
+                  key={option.value ?? 'default'}
+                  className={`flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2 transition ${
+                    strategy === option.value
+                      ? 'border-emerald-400/40 bg-emerald-400/5'
+                      : 'border-white/10 hover:border-white/20'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="overpaymentStrategy"
+                    checked={strategy === option.value}
+                    onChange={() => setStrategy(option.value)}
+                    className="mt-1 accent-emerald-400"
+                  />
+                  <span>
+                    <span className="block text-sm text-zinc-200">{option.label}</span>
+                    <span className="block text-xs text-zinc-500">{option.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
         <div>
           <label className="mb-1.5 block text-sm text-zinc-400">Дата оплаты</label>
           <input
@@ -966,6 +1185,76 @@ function PaymentModal({
   )
 }
 
+/** Модалка правки суммы выкупа (rent_to_own, черновик/активная): график пересчитывается на бэке. */
+function BuyoutPriceModal({
+  rental,
+  onClose,
+  onSubmit,
+}: {
+  rental: Rental
+  onClose: () => void
+  onSubmit: (buyoutPrice: string) => Promise<void>
+}) {
+  const [price, setPrice] = useState(String(rental.buyoutPrice ?? ''))
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  // Живая подсказка: недельный платёж после пересчёта графика
+  const weekly =
+    rental.termWeeks != null && rental.termWeeks > 0 && Number(price) > 0
+      ? Math.round(Number(price) / rental.termWeeks)
+      : null
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!price.trim() || Number.isNaN(Number(price)) || Number(price) <= 0) {
+      setError('Укажите сумму выкупа (больше 0)')
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      await onSubmit(price)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось изменить сумму выкупа')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal open title="Изменить сумму выкупа" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error && (
+          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Сумма выкупа, ₽ *</label>
+          <input
+            type="number"
+            min={1}
+            required
+            value={price}
+            onChange={(event) => setPrice(event.target.value)}
+            className="input"
+          />
+          {weekly != null && (
+            <p className="mt-1.5 text-xs text-zinc-500">
+              Недельный платёж пересчитается: {formatMoney(weekly)}
+            </p>
+          )}
+        </div>
+        <button type="submit" disabled={submitting} className="btn-primary w-full">
+          <Check size={16} />
+          Сохранить
+        </button>
+      </form>
+    </Modal>
+  )
+}
+
 /** Модалка обычного завершения аренды: простое подтверждение без денежных полей. */
 /** Секунды в единице тарифа позиции (месяц = 30 суток, как на бэке). */
 const UNIT_SECONDS: Record<string, number> = {
@@ -975,7 +1264,8 @@ const UNIT_SECONDS: Record<string, number> = {
   month: 30 * 86400,
 }
 
-/** Обычное завершение: приём строго в календарный день окончания периода (локальный пояс браузера). */
+/** Обычное завершение: приём строго в календарный день окончания периода (локальный пояс браузера).
+ *  У rent_to_own — завершение выкупа в любой день при полной оплате, техника уходит клиенту. */
 function CompleteModal({
   rental,
   onClose,
@@ -985,11 +1275,14 @@ function CompleteModal({
   onClose: () => void
   onSubmit: (date: string) => Promise<void>
 }) {
-  // По умолчанию — дата окончания периода из заявки
+  const isBuyout = rental.kind === 'rent_to_own'
+  // По умолчанию: у rent — дата окончания периода из заявки, у выкупа — текущий момент
   const [date, setDate] = useState(
-    rental.plannedEndAt
-      ? toLocalInputValue(new Date(rental.plannedEndAt))
-      : toLocalInputValue(new Date())
+    isBuyout
+      ? toLocalInputValue(new Date())
+      : rental.plannedEndAt
+        ? toLocalInputValue(new Date(rental.plannedEndAt))
+        : toLocalInputValue(new Date())
   )
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -1038,7 +1331,8 @@ function CompleteModal({
       setError('Укажите дату приёма')
       return
     }
-    if (dayShift !== 'same' && dayShift !== null) {
+    // У выкупа ограничения «день окончания» нет — завершение в любой день при полной оплате
+    if (!isBuyout && dayShift !== 'same' && dayShift !== null) {
       return // в другой день завершать нельзя — кнопка задизейблена
     }
     setSubmitting(true)
@@ -1046,14 +1340,20 @@ function CompleteModal({
     try {
       await onSubmit(date)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось завершить аренду')
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : isBuyout
+            ? 'Не удалось завершить выкуп'
+            : 'Не удалось завершить аренду',
+      )
     } finally {
       setSubmitting(false)
     }
   }
 
   return (
-    <Modal open title="Завершить аренду" onClose={onClose}>
+    <Modal open title={isBuyout ? 'Завершить выкуп' : 'Завершить аренду'} onClose={onClose}>
       <form onSubmit={handleSubmit} className="space-y-4">
         {error && (
           <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
@@ -1061,10 +1361,14 @@ function CompleteModal({
           </p>
         )}
         <p className="text-sm text-zinc-400">
-          Все позиции вернутся на склад, аренда завершится.
+          {isBuyout
+            ? 'Велосипед и комплект станут собственностью клиента и уйдут из парка.'
+            : 'Все позиции вернутся на склад, аренда завершится.'}
         </p>
         <div>
-          <label className="mb-1.5 block text-sm text-zinc-400">Дата приёма *</label>
+          <label className="mb-1.5 block text-sm text-zinc-400">
+            {isBuyout ? 'Дата выкупа *' : 'Дата приёма *'}
+          </label>
           <input
             type="datetime-local"
             required
@@ -1072,19 +1376,21 @@ function CompleteModal({
             onChange={(event) => setDate(event.target.value)}
             className="input"
           />
-          <p className="mt-1.5 text-xs text-zinc-500">
-            Приём — в тот же календарный день, что и конец периода
-            {rental.plannedEndAt ? ` (${formatDateTime(rental.plannedEndAt)})` : ''}
-          </p>
+          {!isBuyout && (
+            <p className="mt-1.5 text-xs text-zinc-500">
+              Приём — в тот же календарный день, что и конец периода
+              {rental.plannedEndAt ? ` (${formatDateTime(rental.plannedEndAt)})` : ''}
+            </p>
+          )}
         </div>
-        {dayShift === 'later' && (
+        {!isBuyout && dayShift === 'later' && (
           <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
             Возврат в другой день — доплата {formatMoney(extraDue)}. Завершить нельзя:
             {extendHint ? ` продлите аренду на ${extendHint},` : ' продлите аренду,'} примите
             доплату — после этого аренду можно завершить.
           </p>
         )}
-        {dayShift === 'earlier' && (
+        {!isBuyout && dayShift === 'earlier' && (
           <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
             Дата приёма раньше дня окончания периода. Если клиент вернул технику раньше и просит
             деньги — оформите через «Вернуть досрочно».
@@ -1092,11 +1398,13 @@ function CompleteModal({
         )}
         <button
           type="submit"
-          disabled={submitting || dayShift === 'later' || dayShift === 'earlier'}
+          disabled={
+            submitting || (!isBuyout && (dayShift === 'later' || dayShift === 'earlier'))
+          }
           className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-40"
         >
           <CheckCircle2 size={16} />
-          Завершить аренду
+          {isBuyout ? 'Завершить выкуп' : 'Завершить аренду'}
         </button>
       </form>
     </Modal>
@@ -1191,6 +1499,8 @@ function EarlyReturnModal({
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
+  // Договор под выкуп: расторжение без возврата денег, полной оплаты не требуется
+  const isBuyout = rental.kind === 'rent_to_own'
   const start = new Date(rental.startAt)
   const end = rental.plannedEndAt ? new Date(rental.plannedEndAt) : null
   const picked = date ? new Date(date) : null
@@ -1199,9 +1509,10 @@ function EarlyReturnModal({
     a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 
   // Начисленное за фактический срок startAt → дата приёма: ceil по единицам тарифа, минимум 1
-  // (формула как на бэке); комплектные позиции (parentItemId) — всегда 0, пропускаем
+  // (формула как на бэке); комплектные позиции (parentItemId) — всегда 0, пропускаем.
+  // У выкупа деньги не возвращаются — начисленное не считаем.
   const accrued = useMemo(() => {
-    if (!date) return null
+    if (isBuyout || !date) return null
     const at = new Date(date)
     if (Number.isNaN(at.getTime())) return null
     const startMs = new Date(rental.startAt).getTime()
@@ -1216,15 +1527,20 @@ function EarlyReturnModal({
   // Переплата = потолок возврата (бэк тоже проверяет, 409)
   const overpaid = accrued != null ? Math.max(0, rental.paidAmount - accrued) : 0
 
-  // Дата строго в календарный день ДО дня окончания и не раньше дня начала (локальные дни браузера)
+  // Дата строго в календарный день ДО дня окончания и не раньше дня начала (локальные дни браузера);
+  // у выкупа — только «не раньше дня начала», проверки «день окончания» нет
   const dateError =
     picked == null || !pickedValid
       ? null
-      : end != null && (sameDay(picked, end) || picked > end)
-        ? 'Это не досрочный возврат: возврат в день окончания или позже оформляется обычным завершением'
-        : !sameDay(picked, start) && picked < start
-          ? 'Дата приёма раньше дня начала аренды'
+      : isBuyout
+        ? !sameDay(picked, start) && picked < start
+          ? 'Дата расторжения раньше дня начала договора'
           : null
+        : end != null && (sameDay(picked, end) || picked > end)
+          ? 'Это не досрочный возврат: возврат в день окончания или позже оформляется обычным завершением'
+          : !sameDay(picked, start) && picked < start
+            ? 'Дата приёма раньше дня начала аренды'
+            : null
 
   const showRefund = accrued != null && dateError == null && overpaid > 0
   const refundValue = Number(refundAmount)
@@ -1255,7 +1571,13 @@ function EarlyReturnModal({
     try {
       await onSubmit(refund, refundAccountId, date)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось оформить возврат')
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : isBuyout
+            ? 'Не удалось расторгнуть договор'
+            : 'Не удалось оформить возврат',
+      )
     } finally {
       setSubmitting(false)
     }
@@ -1264,7 +1586,7 @@ function EarlyReturnModal({
   const validationError = error || dateError || refundError
 
   return (
-    <Modal open title="Вернуть досрочно" onClose={onClose}>
+    <Modal open title={isBuyout ? 'Расторгнуть договор' : 'Вернуть досрочно'} onClose={onClose}>
       <form onSubmit={handleSubmit} className="space-y-4">
         {validationError && (
           <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
@@ -1272,11 +1594,19 @@ function EarlyReturnModal({
           </p>
         )}
         <p className="text-sm text-zinc-400">
-          Все позиции аренды (включая комплект) будут возвращены. Вернули раньше конца периода —
-          аренда закроется как «завершена досрочно».
+          {isBuyout
+            ? 'Договор под выкуп будет расторгнут, техника (включая комплект) вернётся в парк.'
+            : 'Все позиции аренды (включая комплект) будут возвращены. Вернули раньше конца периода — аренда закроется как «завершена досрочно».'}
         </p>
+        {isBuyout && (
+          <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
+            Внесённые платежи не возвращаются.
+          </p>
+        )}
         <div>
-          <label className="mb-1.5 block text-sm text-zinc-400">Дата приёма *</label>
+          <label className="mb-1.5 block text-sm text-zinc-400">
+            {isBuyout ? 'Дата расторжения *' : 'Дата приёма *'}
+          </label>
           <input
             type="datetime-local"
             required
@@ -1285,7 +1615,7 @@ function EarlyReturnModal({
             className="input"
           />
         </div>
-        {pickedValid && picked != null && dateError == null && accrued != null && (
+        {!isBuyout && pickedValid && picked != null && dateError == null && accrued != null && (
           <p className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-300">
             Начислено за период по {formatDateTime(picked.toISOString())}: {formatMoney(accrued)} ·
             Оплачено: {formatMoney(rental.paidAmount)} ·{' '}
@@ -1334,7 +1664,7 @@ function EarlyReturnModal({
           className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Undo2 size={16} />
-          Вернуть досрочно
+          {isBuyout ? 'Расторгнуть договор' : 'Вернуть досрочно'}
         </button>
       </form>
     </Modal>

@@ -33,6 +33,7 @@ const statusFilterLabels: [StatusFilter, string][] = [
   ['rented', 'В аренде'],
   ['maintenance', 'Обслуживание'],
   ['sold', 'Продан'],
+  ['bought_out', 'Выкуплен'],
   ['decommissioned', 'Списан'],
 ]
 

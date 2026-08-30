@@ -216,8 +216,9 @@ export function AssetDetailPage() {
   const residualValue = Math.round(
     totals.purchasePrice * (residualRatio + (1 - residualRatio) * (1 - wearRatio)),
   )
-  // Выбывший актив (продан/списан) — карточка read-only
-  const writtenOff = asset.status === 'sold' || asset.status === 'decommissioned'
+  // Выбывший актив (продан/выкуплен/списан) — карточка read-only
+  const writtenOff =
+    asset.status === 'sold' || asset.status === 'decommissioned' || asset.status === 'bought_out'
   // Списание нельзя провести из аренды (409) и повторно
   const canWriteOff = !writtenOff && asset.status !== 'rented'
 

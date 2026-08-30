@@ -26,6 +26,7 @@ export const assetStatusLabels: Record<AssetStatus, string> = {
   rented: 'В аренде',
   maintenance: 'Обслуживание',
   sold: 'Продан',
+  bought_out: 'Выкуплен',
   decommissioned: 'Списан',
 }
 
@@ -36,6 +37,7 @@ export const assetStatusTones: Record<AssetStatus, Tone> = {
   rented: 'sky',
   maintenance: 'amber',
   sold: 'zinc',
+  bought_out: 'amber',
   decommissioned: 'zinc',
 }
 
@@ -103,6 +105,7 @@ export const rentalEventTypeLabels: Record<RentalEventType, string> = {
   payment: 'Оплата',
   issued: 'Выдача',
   extension: 'Продление',
+  schedule: 'График платежей',
   item_return: 'Возврат позиции',
   refund: 'Возврат денег',
   completed: 'Завершение',

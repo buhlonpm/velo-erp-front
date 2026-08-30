@@ -17,6 +17,8 @@ export const AssetStatus = {
   Rented: 'rented',
   Maintenance: 'maintenance',
   Sold: 'sold',
+  /** Выкуплен клиентом по договору rent_to_own */
+  BoughtOut: 'bought_out',
   Decommissioned: 'decommissioned',
 } as const
 export type AssetStatus = (typeof AssetStatus)[keyof typeof AssetStatus]
@@ -290,6 +292,27 @@ export interface RentalExtension {
   createdByName: string | null
 }
 
+/** Строка графика платежей договора «под выкуп» */
+export interface RentalScheduleItem {
+  seq: number
+  /** ISO-строка плановой даты платежа */
+  dueDate: string
+  /** Плановая сумма, ₽ */
+  amount: number
+  /** Погашено, ₽ (хранится на бэке, разносится платежами FIFO) */
+  paidPart: number
+  status: 'paid' | 'partial' | 'next' | 'pending' | 'overdue'
+}
+
+/** Стратегия переплаты по графику выкупа; без стратегии — переплата гасит ближайшие платежи */
+export const OverpaymentStrategy = {
+  /** Срок короче, платёж прежний */
+  ShortenTerm: 'shorten_term',
+  /** Следующие платежи меньше, срок прежний */
+  ReduceNext: 'reduce_next',
+} as const
+export type OverpaymentStrategy = (typeof OverpaymentStrategy)[keyof typeof OverpaymentStrategy]
+
 export interface Rental {
   id: string
   customerId: string
@@ -298,12 +321,14 @@ export interface Rental {
   status: RentalStatus
   /** ISO-строка даты начала */
   startAt: string
-  /** ISO-строка планового окончания; может быть null для rent_to_own */
+  /** ISO-строка планового окончания; у rent_to_own — дата последнего платежа */
   plannedEndAt: string | null
   /** Залог, ₽ */
   deposit: number
   /** Цена выкупа, ₽ (rent_to_own) */
   buyoutPrice: number | null
+  /** Срок выкупа в неделях: 13/26/52 (rent_to_own) */
+  termWeeks: number | null
   comment: string
   /** Сумма, ₽ */
   amount: number
@@ -314,6 +339,10 @@ export interface Rental {
   items: RentalItem[]
   /** Продления аренды (хронологически) */
   extensions: RentalExtension[]
+  /** График платежей (rent_to_own); у rent — пустой массив */
+  schedule: RentalScheduleItem[]
+  /** Ближайший непогашенный платёж, ISO (rent_to_own); null — всё оплачено */
+  nextPaymentDue: string | null
   /** ISO-строка создания */
   createdAt: string
 }
@@ -342,6 +371,8 @@ export const RentalEventType = {
   Payment: 'payment',
   Issued: 'issued',
   Extension: 'extension',
+  /** Изменение условий выкупа: сумма, график платежей */
+  Schedule: 'schedule',
   ItemReturn: 'item_return',
   Refund: 'refund',
   Completed: 'completed',
@@ -430,6 +461,8 @@ export interface DashboardRental {
   plannedEndAt: string | null
   amount: number
   status: RentalStatus
+  /** Ближайший непогашенный платёж по графику (rent_to_own), ISO */
+  nextPaymentDue: string | null
 }
 
 /** GET /api/dashboard — весь дашборд одним запросом */
