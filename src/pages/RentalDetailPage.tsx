@@ -45,6 +45,7 @@ export function RentalDetailPage() {
   const [earlyReturnOpen, setEarlyReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
   const [editExtension, setEditExtension] = useState<RentalExtension | null>(null)
+  const [deleteOpen, setDeleteOpen] = useState(false)
 
   const showError = (err: unknown, fallback: string) =>
     setError(err instanceof ApiError ? err.message : fallback)
@@ -132,6 +133,10 @@ export function RentalDetailPage() {
   const isDraft = rental.status === 'draft'
   const isActive = rental.status === 'active' || rental.status === 'overdue'
   const isCompleted = rental.status === 'completed' || rental.status === 'completed_early'
+  // Удаление без следа — только ADMIN и только финальные статусы (бэк тоже проверяет, 403/409)
+  const canDelete =
+    user?.role === 'ADMIN' &&
+    (isCompleted || rental.status === 'cancelled')
   const canExtend = isActive && rental.kind === 'rent' && rental.plannedEndAt != null
   const remaining = Math.max(0, rental.amount - rental.paidAmount)
   // Группировка комплекта: верхнеуровневые позиции + их дочерние АКБ/зарядники
@@ -493,6 +498,19 @@ export function RentalDetailPage() {
         )}
       </section>
 
+      {/* Удаление аренды без следа (ADMIN, только финальные статусы) */}
+      {canDelete && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setDeleteOpen(true)}
+            className="text-xs text-red-400/60 underline transition hover:text-red-400"
+          >
+            Удалить аренду
+          </button>
+        </div>
+      )}
+
       {/* Приём оплаты: сумма (по умолчанию остаток), дата, счёт */}
       {paymentOpen && (
         <PaymentModal
@@ -617,6 +635,19 @@ export function RentalDetailPage() {
             })
             setEditExtension(null)
             await loadRental()
+          }}
+        />
+      )}
+
+      {/* Удаление аренды: каскадно удаляются позиции, события, продления и операции по ней */}
+      {deleteOpen && (
+        <DeleteRentalModal
+          customerName={rental.customerName}
+          onClose={() => setDeleteOpen(false)}
+          onSubmit={async () => {
+            await api(`/rentals/${rental.id}`, { method: 'DELETE' })
+            setDeleteOpen(false)
+            navigate('/rentals')
           }}
         />
       )}
@@ -1388,6 +1419,69 @@ function ExtendModal({
         <button type="submit" disabled={submitting} className="btn-primary w-full">
           {submitLabel}
         </button>
+      </form>
+    </Modal>
+  )
+}
+
+/**
+ * Подтверждение удаления аренды без следа (ADMIN, финальные статусы): каскадно удаляются
+ * позиции, события, продления и все финансовые операции по аренде. После удаления — на список.
+ */
+function DeleteRentalModal({
+  customerName,
+  onClose,
+  onSubmit,
+}: {
+  customerName: string
+  onClose: () => void
+  onSubmit: () => Promise<void>
+}) {
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setError('')
+    try {
+      await onSubmit()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить аренду')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal open title="Удалить аренду" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error && (
+          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+        <p className="text-sm text-zinc-400">
+          Удалить аренду клиента {customerName} навсегда? Удалятся также все операции по ней
+          (оплаты и возвраты) — деньги исчезнут из балансов счетов. Действие необратимо.
+        </p>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-zinc-400 transition hover:text-zinc-200"
+          >
+            Отмена
+          </button>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-red-400/30 bg-red-400/10 px-4 py-2 text-sm font-medium text-red-400 transition hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Trash2 size={16} />
+            Удалить
+          </button>
+        </div>
       </form>
     </Modal>
   )

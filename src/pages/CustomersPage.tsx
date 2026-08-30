@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Pencil, Plus, Search, Users } from 'lucide-react'
+import { Pencil, Plus, Search, Trash2, Users } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { Customer } from '../types'
 import { Modal } from '../components/Modal'
@@ -13,6 +13,7 @@ export function CustomersPage() {
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [modal, setModal] = useState<{ open: boolean; customer?: Customer }>({ open: false })
+  const [deleteTarget, setDeleteTarget] = useState<Customer | null>(null)
 
   const showError = (err: unknown, fallback: string) =>
     setError(err instanceof ApiError ? err.message : fallback)
@@ -136,14 +137,27 @@ export function CustomersPage() {
                       </span>
                     </td>
                     <td className="td text-right">
-                      <button
-                        type="button"
-                        title="Редактировать"
-                        onClick={() => setModal({ open: true, customer })}
-                        className="rounded-lg p-2 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
-                      >
-                        <Pencil size={16} />
-                      </button>
+                      <span className="inline-flex gap-1">
+                        <button
+                          type="button"
+                          title="Редактировать"
+                          onClick={() => setModal({ open: true, customer })}
+                          className="rounded-lg p-2 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
+                        >
+                          <Pencil size={16} />
+                        </button>
+                        {/* По клиенту с арендами удаление невозможно (409) — скрываем кнопку */}
+                        {customer.rentalsCount === 0 && (
+                          <button
+                            type="button"
+                            title="Удалить"
+                            onClick={() => setDeleteTarget(customer)}
+                            className="rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -159,7 +173,79 @@ export function CustomersPage() {
         onClose={() => setModal({ open: false })}
         onSave={saveCustomer}
       />
+
+      {/* Удаление клиента без аренд (бэк вернёт 409, если аренды появились) */}
+      {deleteTarget && (
+        <DeleteCustomerModal
+          customer={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onSubmit={async () => {
+            await api(`/customers/${deleteTarget.id}`, { method: 'DELETE' })
+            setDeleteTarget(null)
+            await loadCustomers(query)
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/** Подтверждение удаления клиента; ошибки (напр. 409 «есть аренды») — текстом внутри модалки */
+function DeleteCustomerModal({
+  customer,
+  onClose,
+  onSubmit,
+}: {
+  customer: Customer
+  onClose: () => void
+  onSubmit: () => Promise<void>
+}) {
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setError('')
+    try {
+      await onSubmit()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить клиента')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal open title="Удалить клиента" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error && (
+          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
+            {error}
+          </p>
+        )}
+        <p className="text-sm text-zinc-400">
+          Удалить клиента {customer.fullName} навсегда? Действие необратимо.
+        </p>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-zinc-400 transition hover:text-zinc-200"
+          >
+            Отмена
+          </button>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-red-400/30 bg-red-400/10 px-4 py-2 text-sm font-medium text-red-400 transition hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Trash2 size={16} />
+            Удалить
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
