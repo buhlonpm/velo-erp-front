@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Banknote, Check, CheckCircle2, ClipboardList, History, KeyRound, Lock, Pencil, Trash2, Undo2, X } from 'lucide-react'
+import { ArrowLeft, Banknote, Check, CheckCircle2, ClipboardList, History, KeyRound, Lock, Pencil, PiggyBank, Trash2, Undo2 } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission, PERMISSIONS } from '../auth/permissions'
@@ -62,8 +62,9 @@ export function RentalDetailPage() {
   const [earlyReturnOpen, setEarlyReturnOpen] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
   const [editExtension, setEditExtension] = useState<RentalExtension | null>(null)
-  const [buyoutEditOpen, setBuyoutEditOpen] = useState(false)
-  const [deleteOpen, setDeleteOpen] = useState(false)
+  // null | 'normal' (кнопка «Удалить» у черновика — обычный DELETE, всем ролям)
+  //      | 'force' (скрытая ссылка внизу — только ADMIN, любой статус)
+  const [deleteMode, setDeleteMode] = useState<'normal' | 'force' | null>(null)
 
   const showError = (err: unknown, fallback: string) =>
     setError(err instanceof ApiError ? err.message : fallback)
@@ -98,18 +99,6 @@ export function RentalDetailPage() {
       .then((customer) => setCustomerPhone(customer.phone))
       .catch(() => setCustomerPhone(''))
   }, [rental])
-
-  const cancelRental = async () => {
-    if (!rental) return
-    if (!window.confirm(`Отменить черновик аренды клиента ${rental.customerName}? Активы освободятся из резерва.`))
-      return
-    try {
-      await api(`/rentals/${rental.id}/cancel`, { method: 'POST' })
-      await loadRental()
-    } catch (err) {
-      showError(err, 'Не удалось отменить аренду')
-    }
-  }
 
   const deleteExtension = async (extension: RentalExtension) => {
     if (!rental) return
@@ -151,10 +140,9 @@ export function RentalDetailPage() {
   const isDraft = rental.status === 'draft'
   const isActive = rental.status === 'active' || rental.status === 'overdue'
   const isCompleted = rental.status === 'completed' || rental.status === 'completed_early'
-  // Удаление без следа — только ADMIN и только финальные статусы (бэк тоже проверяет, 403/409)
-  const canDelete =
-    user?.role === 'ADMIN' &&
-    (isCompleted || rental.status === 'cancelled')
+  // Удаление: у черновика — кнопка «Удалить» в блоке действий (всем ролям, один эндпоинт;
+  // бэк отдаст 409 при наличии оплат); скрытая ссылка внизу — ADMIN всегда (force, любой статус)
+  const canForceDelete = user?.role === 'ADMIN'
   const canExtend = isActive && rental.kind === 'rent' && rental.plannedEndAt != null
   const remaining = Math.max(0, rental.amount - rental.paidAmount)
   // Договор под выкуп: график платежей, ближайший непогашенный платёж и его остаток
@@ -170,6 +158,18 @@ export function RentalDetailPage() {
       ? Math.round(rental.buyoutPrice / rental.termWeeks)
       : null)
   const schedulePaidCount = schedule.filter((item) => item.status === 'paid').length
+  // Переплата, поглощённая перестройками графика (сокращение срока / уменьшение платежей):
+  // оплачена, но в покрытии строк не видна — показываем пояснение отдельной строкой
+  const scheduleAbsorbed = isBuyout ? (rental.scheduleAbsorbed ?? 0) : 0
+  // Погашенные строки идут префиксом (FIFO): длинную цепочку схлопываем в сводную строку
+  const paidPrefix: RentalScheduleItem[] = []
+  for (const item of schedule) {
+    if (item.status !== 'paid') break
+    paidPrefix.push(item)
+  }
+  const collapsePaid = paidPrefix.length > 2
+  const collapsedPaidSum = paidPrefix.reduce((sum, item) => sum + item.amount, 0)
+  const visibleSchedule = collapsePaid ? schedule.slice(paidPrefix.length) : schedule
   // Группировка комплекта: верхнеуровневые позиции + их дочерние АКБ/зарядники
   const topLevelItems = rental.items.filter((item) => !item.parentItemId)
   const childrenOf = (parentId: string): RentalItem[] =>
@@ -238,6 +238,11 @@ export function RentalDetailPage() {
               <p className="mt-0.5 text-xl font-semibold text-emerald-400">
                 {formatMoney(rental.paidAmount)}
               </p>
+              {scheduleAbsorbed > 0 && (
+                <p className="mt-0.5 text-xs text-amber-300">
+                  из них досрочно зачтено: {formatMoney(scheduleAbsorbed)}
+                </p>
+              )}
             </div>
             {rental.refundedAmount > 0 && (
               <div>
@@ -347,19 +352,7 @@ export function RentalDetailPage() {
             {rental.buyoutPrice != null && (
               <div className="flex justify-between gap-4">
                 <dt className="text-zinc-500">Цена выкупа</dt>
-                <dd className="flex items-center gap-2 text-zinc-300">
-                  {formatMoney(rental.buyoutPrice)}
-                  {isBuyout && (isDraft || isActive) && (
-                    <button
-                      type="button"
-                      onClick={() => setBuyoutEditOpen(true)}
-                      title="Изменить сумму выкупа"
-                      className="rounded-lg p-1 text-zinc-500 transition hover:bg-white/5 hover:text-emerald-400"
-                    >
-                      <Pencil size={14} />
-                    </button>
-                  )}
-                </dd>
+                <dd className="text-zinc-300">{formatMoney(rental.buyoutPrice)}</dd>
               </div>
             )}
           </div>
@@ -405,7 +398,7 @@ export function RentalDetailPage() {
         )}
       </section>
 
-      {/* График платежей (rent_to_own): показываем всегда, у завершённой/отменённой — как историю */}
+      {/* График платежей (rent_to_own): показываем всегда, у завершённой — как историю */}
       {isBuyout && schedule.length > 0 && (
         <section className="panel overflow-hidden">
           <div className="border-b border-white/5 px-5 py-4">
@@ -415,6 +408,20 @@ export function RentalDetailPage() {
                 · оплачено {schedulePaidCount} из {schedule.length}
               </span>
             </h2>
+            {scheduleAbsorbed > 0 && (
+              <div className="mt-3 flex items-center gap-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-4 py-3">
+                <PiggyBank size={20} className="shrink-0 text-amber-400" />
+                <div>
+                  <p className="text-sm font-semibold text-amber-300">
+                    Досрочная переплата: {formatMoney(scheduleAbsorbed)}
+                  </p>
+                  <p className="text-xs text-amber-200/70">
+                    Учтена при перестройке графика (сокращение срока / уменьшение платежей) —
+                    в строки графика не входит, но засчитана в сумму выкупа
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -428,7 +435,37 @@ export function RentalDetailPage() {
                 </tr>
               </thead>
               <tbody>
-                {schedule.map((item, index) => (
+                {scheduleAbsorbed > 0 && (
+                  <tr className="border-b border-amber-400/20 bg-amber-400/5">
+                    <td className="td text-amber-400/70">
+                      <PiggyBank size={14} />
+                    </td>
+                    <td className="td text-amber-200/80" colSpan={2}>
+                      Досрочная переплата (учтена перестройкой)
+                    </td>
+                    <td className="td text-right font-medium text-amber-300">
+                      {formatMoney(scheduleAbsorbed)}
+                    </td>
+                    <td className="td">
+                      <StatusBadge label="Учтено" tone="amber" />
+                    </td>
+                  </tr>
+                )}
+                {collapsePaid && (
+                  <tr className="border-b border-white/5 bg-white/[0.02]">
+                    <td className="td text-zinc-500">…</td>
+                    <td className="td text-zinc-500" colSpan={2}>
+                      Погашено платежей: {paidPrefix.length}
+                    </td>
+                    <td className="td text-right text-zinc-500">
+                      {formatMoney(collapsedPaidSum)}
+                    </td>
+                    <td className="td">
+                      <StatusBadge label={scheduleStatusLabels.paid} tone={scheduleStatusTones.paid} />
+                    </td>
+                  </tr>
+                )}
+                {visibleSchedule.map((item, index) => (
                   <tr
                     key={item.seq}
                     className={`border-b border-white/5 transition last:border-0 hover:bg-white/[0.03] ${
@@ -470,14 +507,26 @@ export function RentalDetailPage() {
                 <KeyRound size={16} />
                 Выдать аренду
               </button>
-              <button
-                type="button"
-                onClick={cancelRental}
-                className="inline-flex items-center gap-2 rounded-lg border border-red-400/20 bg-red-400/10 px-4 py-2 text-sm font-medium text-red-400 transition hover:bg-red-400/20"
-              >
-                <X size={16} />
-                Отменить аренду
-              </button>
+              {/* Правый угол: редактирование черновика и удаление (один эндпоинт для всех
+                  ролей — бэк отдаст 409, если по черновику приняты оплаты) */}
+              <div className="ml-auto flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/rentals/${rental.id}/edit`)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-zinc-400 transition hover:border-emerald-400/40 hover:text-emerald-400"
+                >
+                  <Pencil size={16} />
+                  Редактировать
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeleteMode('normal')}
+                  className="inline-flex items-center gap-2 rounded-lg border border-red-400/20 bg-red-400/10 px-4 py-2 text-sm font-medium text-red-400 transition hover:bg-red-400/20"
+                >
+                  <Trash2 size={16} />
+                  Удалить
+                </button>
+              </div>
             </>
           )}
           {isActive && (
@@ -626,12 +675,12 @@ export function RentalDetailPage() {
         )}
       </section>
 
-      {/* Удаление аренды без следа (ADMIN, только финальные статусы) */}
-      {canDelete && (
+      {/* Force-удаление аренды без следа из любого статуса — только ADMIN (скрытая ссылка) */}
+      {canForceDelete && (
         <div className="flex justify-end">
           <button
             type="button"
-            onClick={() => setDeleteOpen(true)}
+            onClick={() => setDeleteMode('force')}
             className="text-xs text-red-400/60 underline transition hover:text-red-400"
           >
             Удалить аренду
@@ -657,22 +706,6 @@ export function RentalDetailPage() {
               }),
             })
             setPaymentOpen(false)
-            await loadRental()
-          }}
-        />
-      )}
-
-      {/* Правка суммы выкупа (rent_to_own, черновик/активная): график пересчитается на бэке */}
-      {buyoutEditOpen && (
-        <BuyoutPriceModal
-          rental={rental}
-          onClose={() => setBuyoutEditOpen(false)}
-          onSubmit={async (buyoutPrice) => {
-            await api(`/rentals/${rental.id}`, {
-              method: 'PATCH',
-              body: JSON.stringify({ buyoutPrice: Number(buyoutPrice) }),
-            })
-            setBuyoutEditOpen(false)
             await loadRental()
           }}
         />
@@ -785,14 +818,17 @@ export function RentalDetailPage() {
         />
       )}
 
-      {/* Удаление аренды: каскадно удаляются позиции, события, продления и операции по ней */}
-      {deleteOpen && (
+      {/* Удаление аренды: каскадно удаляются позиции, события, продления и операции по ней.
+          'normal' — кнопка у черновика, один эндпоинт для всех ролей (409 при оплатах);
+          'force' — скрытая ссылка админа, любой статус, бесследно */}
+      {deleteMode && (
         <DeleteRentalModal
           customerName={rental.customerName}
-          onClose={() => setDeleteOpen(false)}
+          force={deleteMode === 'force'}
+          onClose={() => setDeleteMode(null)}
           onSubmit={async () => {
-            await api(`/rentals/${rental.id}`, { method: 'DELETE' })
-            setDeleteOpen(false)
+            await api(deleteMode === 'force' ? `/rentals/${rental.id}/force` : `/rentals/${rental.id}`, { method: 'DELETE' })
+            setDeleteMode(null)
             navigate('/rentals')
           }}
         />
@@ -1179,76 +1215,6 @@ function PaymentModal({
         <button type="submit" disabled={submitting} className="btn-primary w-full">
           <Banknote size={16} />
           Принять оплату
-        </button>
-      </form>
-    </Modal>
-  )
-}
-
-/** Модалка правки суммы выкупа (rent_to_own, черновик/активная): график пересчитывается на бэке. */
-function BuyoutPriceModal({
-  rental,
-  onClose,
-  onSubmit,
-}: {
-  rental: Rental
-  onClose: () => void
-  onSubmit: (buyoutPrice: string) => Promise<void>
-}) {
-  const [price, setPrice] = useState(String(rental.buyoutPrice ?? ''))
-  const [error, setError] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-
-  // Живая подсказка: недельный платёж после пересчёта графика
-  const weekly =
-    rental.termWeeks != null && rental.termWeeks > 0 && Number(price) > 0
-      ? Math.round(Number(price) / rental.termWeeks)
-      : null
-
-  const handleSubmit = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!price.trim() || Number.isNaN(Number(price)) || Number(price) <= 0) {
-      setError('Укажите сумму выкупа (больше 0)')
-      return
-    }
-    setSubmitting(true)
-    setError('')
-    try {
-      await onSubmit(price)
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось изменить сумму выкупа')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <Modal open title="Изменить сумму выкупа" onClose={onClose}>
-      <form onSubmit={handleSubmit} className="space-y-4">
-        {error && (
-          <p className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-400">
-            {error}
-          </p>
-        )}
-        <div>
-          <label className="mb-1.5 block text-sm text-zinc-400">Сумма выкупа, ₽ *</label>
-          <input
-            type="number"
-            min={1}
-            required
-            value={price}
-            onChange={(event) => setPrice(event.target.value)}
-            className="input"
-          />
-          {weekly != null && (
-            <p className="mt-1.5 text-xs text-zinc-500">
-              Недельный платёж пересчитается: {formatMoney(weekly)}
-            </p>
-          )}
-        </div>
-        <button type="submit" disabled={submitting} className="btn-primary w-full">
-          <Check size={16} />
-          Сохранить
         </button>
       </form>
     </Modal>
@@ -1760,10 +1726,13 @@ function ExtendModal({
  */
 function DeleteRentalModal({
   customerName,
+  force,
   onClose,
   onSubmit,
 }: {
   customerName: string
+  /** force — скрытое удаление админом из любого статуса (с операциями и возвратом активов) */
+  force: boolean
   onClose: () => void
   onSubmit: () => Promise<void>
 }) {
@@ -1792,8 +1761,19 @@ function DeleteRentalModal({
           </p>
         )}
         <p className="text-sm text-zinc-400">
-          Удалить аренду клиента {customerName} навсегда? Удалятся также все операции по ней
-          (оплаты и возвраты) — деньги исчезнут из балансов счетов. Действие необратимо.
+          {force ? (
+            <>
+              Удалить аренду клиента {customerName} навсегда? Удалятся также все операции по ней
+              (оплаты и возвраты) — деньги исчезнут из балансов счетов, а техника вернётся в парк
+              (выкуп откатится). Действие необратимо.
+            </>
+          ) : (
+            <>
+              Удалить черновик аренды клиента {customerName}? Активы освободятся из резерва.
+              Если по черновику приняты оплаты, удаление не пройдёт — сначала удалите их
+              из истории оплат. Действие необратимо.
+            </>
+          )}
         </p>
         <div className="flex gap-2">
           <button

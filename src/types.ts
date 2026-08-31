@@ -253,7 +253,6 @@ export const RentalStatus = {
   Completed: 'completed',
   /** Завершена досрочным возвратом (раньше конца оплаченного периода) */
   CompletedEarly: 'completed_early',
-  Cancelled: 'cancelled',
 } as const
 export type RentalStatus = (typeof RentalStatus)[keyof typeof RentalStatus]
 
@@ -341,6 +340,8 @@ export interface Rental {
   extensions: RentalExtension[]
   /** График платежей (rent_to_own); у rent — пустой массив */
   schedule: RentalScheduleItem[]
+  /** Переплата, поглощённая перестройками графика (rent_to_own); null у rent */
+  scheduleAbsorbed: number | null
   /** Ближайший непогашенный платёж, ISO (rent_to_own); null — всё оплачено */
   nextPaymentDue: string | null
   /** ISO-строка создания */
@@ -376,7 +377,6 @@ export const RentalEventType = {
   ItemReturn: 'item_return',
   Refund: 'refund',
   Completed: 'completed',
-  Cancelled: 'cancelled',
 } as const
 export type RentalEventType = (typeof RentalEventType)[keyof typeof RentalEventType]
 

@@ -66,7 +66,6 @@ export const rentalStatusLabels: Record<RentalStatus, string> = {
   overdue: 'Просрочена',
   completed: 'Завершена',
   completed_early: 'Завершена досрочно',
-  cancelled: 'Отменена',
 }
 
 export const rentalStatusTones: Record<RentalStatus, Tone> = {
@@ -75,7 +74,6 @@ export const rentalStatusTones: Record<RentalStatus, Tone> = {
   overdue: 'red',
   completed: 'zinc',
   completed_early: 'zinc',
-  cancelled: 'zinc',
 }
 
 export const rentalKindLabels: Record<RentalKind, string> = {
@@ -109,7 +107,6 @@ export const rentalEventTypeLabels: Record<RentalEventType, string> = {
   item_return: 'Возврат позиции',
   refund: 'Возврат денег',
   completed: 'Завершение',
-  cancelled: 'Отмена',
 }
 
 export const accountTypeLabels: Record<AccountType, string> = {

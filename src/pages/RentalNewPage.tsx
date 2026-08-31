@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Check, Plus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { Asset, AssetDetail, AssetType, BikeModel, Customer, Rental, RentalKind, TariffUnit } from '../types'
-import { formatDateTime, formatMoney } from '../lib/format'
+import { formatDateTime, formatMoney, splitDuration } from '../lib/format'
 import { assetTypeLabels, rentalKindLabels, tariffUnitLabels, tariffUnitSeconds } from '../lib/labels'
 
 /** Значение для input datetime-local из Date (в локальной TZ) */
@@ -40,13 +40,59 @@ const newRow = (): ItemRow => ({
 /** Сроки выкупа в неделях (бэк принимает только эти) */
 const TERM_WEEKS_OPTIONS = [13, 26, 52] as const
 
+/**
+ * Заглушка Asset из позиции аренды — для селектов в режиме редактирования:
+ * активы черновика в статусе reserved и не приходят в /assets?status=available.
+ */
+function assetFromItem(item: {
+  assetId: string
+  assetType: AssetType
+  assetName: string
+  inventoryNumber: string
+}): Asset {
+  return {
+    id: item.assetId,
+    type: item.assetType,
+    inventoryNumber: item.inventoryNumber,
+    name: item.assetName,
+    status: 'reserved',
+    description: '',
+    purchasedAt: null,
+    purchasePrice: null,
+    vin: null,
+    modelId: null,
+    modelName: null,
+    mileageKm: null,
+    gpsTrackerId: null,
+    gpsTrackerModel: null,
+    gpsSimNumber: null,
+    gpsOperator: null,
+    writeOffReason: null,
+    writtenOffAt: null,
+    voltage: null,
+    capacityAh: null,
+    chargeCycles: null,
+    bikeId: null,
+    bikeName: null,
+    bundledBikeId: null,
+    bundledBikeName: null,
+    powerW: null,
+    connector: null,
+  }
+}
+
 export function RentalNewPage() {
   const navigate = useNavigate()
+  // Есть id в маршруте — режим редактирования черновика (PATCH), иначе создание (POST)
+  const { id } = useParams<{ id: string }>()
+  const isEdit = id != null
   const [customers, setCustomers] = useState<Customer[]>([])
   const [availableAssets, setAvailableAssets] = useState<Asset[]>([])
   const [models, setModels] = useState<BikeModel[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // Открыли на редактирование не-черновик — форму не показываем (бэк всё равно дал бы 409)
+  const [notDraft, setNotDraft] = useState(false)
 
   const [customerId, setCustomerId] = useState('')
   const [kind, setKind] = useState<RentalKind>('rent')
@@ -65,21 +111,85 @@ export function RentalNewPage() {
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
-    Promise.all([
-      api<Customer[]>('/customers'),
-      api<Asset[]>('/assets?status=available'),
-      api<BikeModel[]>('/bike-models'),
-    ])
-      .then(([customerList, assetList, modelList]) => {
+    const load = async () => {
+      try {
+        const [customerList, assetList, modelList] = await Promise.all([
+          api<Customer[]>('/customers'),
+          api<Asset[]>('/assets?status=available'),
+          api<BikeModel[]>('/bike-models'),
+        ])
         setCustomers(customerList)
-        setAvailableAssets(assetList)
         setModels(modelList)
-      })
-      .catch((err) =>
-        setError(err instanceof ApiError ? err.message : 'Не удалось загрузить данные'),
-      )
-      .finally(() => setLoading(false))
-  }, [])
+
+        if (id == null) {
+          setAvailableAssets(assetList)
+          return
+        }
+
+        const rental = await api<Rental>(`/rentals/${id}`)
+        if (rental.status !== 'draft') {
+          setNotDraft(true)
+          return
+        }
+
+        // Активы черновика в резерве и не приходят в ?status=available —
+        // дополняем селекты заглушками из позиций аренды, чтобы выбранные отображались
+        const rootItems = rental.items.filter((item) => !item.parentItemId)
+        const missing = rootItems
+          .filter((item) => !assetList.some((asset) => asset.id === item.assetId))
+          .map(assetFromItem)
+        setAvailableAssets([...assetList, ...missing])
+
+        setCustomerId(rental.customerId)
+        setKind(rental.kind)
+        setStartAt(toLocalInputValue(new Date(rental.startAt)))
+        setComment(rental.comment)
+        if (rental.kind === 'rent') {
+          // Срок восстанавливаем из фактического периода (startAt → plannedEndAt)
+          const period = splitDuration(rental.startAt, rental.plannedEndAt)
+          if (period) {
+            setDuration(String(period.value))
+            setDurationUnit(period.unit)
+          }
+        } else {
+          if (rental.termWeeks != null) setTermWeeks(rental.termWeeks)
+          setBuyoutPrice(rental.buyoutPrice != null ? String(rental.buyoutPrice) : '')
+          // Итог уже известен — не даём эффекту перезатереть его до первой ручной правки
+          setBuyoutTouched(true)
+        }
+
+        // Позиции — только корневые; дочерний комплект дотягиваем из карточек велосипедов
+        const prefilled: ItemRow[] = rootItems.map((item) => ({
+          key: ++rowKey,
+          assetId: item.assetId,
+          rate: String(item.rate),
+          children: [],
+        }))
+        await Promise.all(
+          prefilled.map(async (row, index) => {
+            if (rootItems[index].assetType !== 'bike') return
+            try {
+              const detail = await api<AssetDetail>(`/assets/${row.assetId}/detail`)
+              row.children = [...detail.mountedBatteries, ...detail.mountedChargers].map((kit) => ({
+                assetId: kit.id,
+                name: kit.name,
+                inventoryNumber: kit.inventoryNumber,
+                type: kit.type,
+              }))
+            } catch {
+              // Не удалось узнать комплект — сервер подтянет АКБ/зарядник сам с тарифом 0
+            }
+          }),
+        )
+        setRows(prefilled.length > 0 ? prefilled : [newRow()])
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Не удалось загрузить данные')
+      } finally {
+        setLoading(false)
+      }
+    }
+    void load()
+  }, [id])
 
   const chosenAssetIds = new Set(rows.map((row) => row.assetId).filter(Boolean))
   const assetById = new Map(availableAssets.map((asset) => [asset.id, asset]))
@@ -267,22 +377,44 @@ export function RentalNewPage() {
     setSubmitting(true)
     setError('')
     try {
-      const rental = await api<Rental>('/rentals', {
-        method: 'POST',
-        body: JSON.stringify({
-          customerId,
-          kind,
-          ...(startAt ? { startAt: new Date(startAt).toISOString() } : {}),
-          ...(kind === 'rent' ? { duration: Number(duration), durationUnit } : {}),
-          ...(kind === 'rent_to_own' ? { buyoutPrice: Number(buyoutPrice), termWeeks } : {}),
-          ...(comment.trim() ? { comment: comment.trim() } : {}),
-          items,
-        }),
-      })
-      navigate(`/rentals/${rental.id}`)
+      if (isEdit) {
+        // Полное редактирование черновика: kind не шлём — тип договора менять нельзя
+        await api<Rental>(`/rentals/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            customerId,
+            ...(startAt ? { startAt: new Date(startAt).toISOString() } : {}),
+            ...(kind === 'rent' ? { duration: Number(duration), durationUnit } : {}),
+            ...(kind === 'rent_to_own' ? { buyoutPrice: Number(buyoutPrice), termWeeks } : {}),
+            comment: comment.trim(),
+            items,
+          }),
+        })
+        navigate(`/rentals/${id}`)
+      } else {
+        const rental = await api<Rental>('/rentals', {
+          method: 'POST',
+          body: JSON.stringify({
+            customerId,
+            kind,
+            ...(startAt ? { startAt: new Date(startAt).toISOString() } : {}),
+            ...(kind === 'rent' ? { duration: Number(duration), durationUnit } : {}),
+            ...(kind === 'rent_to_own' ? { buyoutPrice: Number(buyoutPrice), termWeeks } : {}),
+            ...(comment.trim() ? { comment: comment.trim() } : {}),
+            items,
+          }),
+        })
+        navigate(`/rentals/${rental.id}`)
+      }
     } catch (err) {
       // 409: актив уже занят и т.п. — показываем текст сервера, форма не теряется
-      setError(err instanceof ApiError ? err.message : 'Не удалось создать аренду')
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : isEdit
+            ? 'Не удалось сохранить аренду'
+            : 'Не удалось создать аренду',
+      )
     } finally {
       setSubmitting(false)
     }
@@ -293,13 +425,15 @@ export function RentalNewPage() {
       <div className="flex items-center gap-4">
         <button
           type="button"
-          onClick={() => navigate('/rentals')}
+          onClick={() => (isEdit ? navigate(`/rentals/${id}`) : navigate('/rentals'))}
           className="inline-flex items-center gap-2 text-sm text-zinc-400 transition hover:text-zinc-200"
         >
           <ArrowLeft size={16} />
-          К арендам
+          {isEdit ? 'К аренде' : 'К арендам'}
         </button>
-        <h1 className="text-xl font-semibold text-zinc-100">Новая аренда</h1>
+        <h1 className="text-xl font-semibold text-zinc-100">
+          {isEdit ? 'Редактирование черновика' : 'Новая аренда'}
+        </h1>
       </div>
 
       {error && (
@@ -308,7 +442,12 @@ export function RentalNewPage() {
         </p>
       )}
 
-      {loading ? (
+      {notDraft ? (
+        // Открыли на редактирование выданную/завершённую аренду — править можно только черновик
+        <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
+          Менять аренду можно только в черновике
+        </p>
+      ) : loading ? (
         <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
       ) : (
         <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_2fr]">
@@ -339,12 +478,14 @@ export function RentalNewPage() {
                 <button
                   key={value}
                   type="button"
+                  disabled={isEdit}
                   onClick={() => handleKindChange(value)}
-                  className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                  title={isEdit ? 'Тип договора у созданной аренды не меняется' : undefined}
+                  className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed ${
                     kind === value
                       ? 'bg-emerald-400/10 text-emerald-400'
                       : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
+                  } ${isEdit ? 'opacity-50' : ''}`}
                 >
                   {rentalKindLabels[value]}
                 </button>
@@ -562,7 +703,7 @@ export function RentalNewPage() {
 
             <button type="submit" disabled={submitting} className="btn-primary w-full">
               <Check size={16} />
-              Создать аренду
+              {isEdit ? 'Сохранить' : 'Создать аренду'}
             </button>
           </section>
         </form>

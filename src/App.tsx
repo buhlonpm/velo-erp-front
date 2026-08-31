@@ -29,6 +29,7 @@ export default function App() {
               <Route path="park/chargers/:id" element={<AssetDetailPage />} />
               <Route path="rentals" element={<RentalsPage />} />
               <Route path="rentals/new" element={<RentalNewPage />} />
+              <Route path="rentals/:id/edit" element={<RentalNewPage />} />
               <Route path="rentals/:id" element={<RentalDetailPage />} />
               <Route path="customers" element={<CustomersPage />} />
               <Route path="finance" element={<PermissionRoute permission={PERMISSIONS.FINANCE_VIEW} />}>
