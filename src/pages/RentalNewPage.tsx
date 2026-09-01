@@ -146,11 +146,24 @@ export function RentalNewPage() {
         setStartAt(toLocalInputValue(new Date(rental.startAt)))
         setComment(rental.comment)
         if (rental.kind === 'rent') {
-          // Срок восстанавливаем из фактического периода (startAt → plannedEndAt)
-          const period = splitDuration(rental.startAt, rental.plannedEndAt)
-          if (period) {
-            setDuration(String(period.value))
-            setDurationUnit(period.unit)
+          // Срок восстанавливаем в исходной единице аренды (из позиций), а не «красивым»
+          // разбиением периода: 7 дней по 1000 ₽/день должны остаться «7 дней», иначе
+          // единица съезжает на «1 неделю», а цены позиций остаются дневными
+          const unit = rootItems[0]?.tariffUnit
+          const seconds = rental.plannedEndAt
+            ? Math.round(
+                (new Date(rental.plannedEndAt).getTime() - new Date(rental.startAt).getTime()) / 1000,
+              )
+            : 0
+          if (unit && seconds > 0 && seconds % tariffUnitSeconds[unit] === 0) {
+            setDurationUnit(unit)
+            setDuration(String(seconds / tariffUnitSeconds[unit]))
+          } else {
+            const period = splitDuration(rental.startAt, rental.plannedEndAt)
+            if (period) {
+              setDuration(String(period.value))
+              setDurationUnit(period.unit)
+            }
           }
         } else {
           if (rental.termWeeks != null) setTermWeeks(rental.termWeeks)

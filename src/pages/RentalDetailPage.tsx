@@ -10,7 +10,7 @@ import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
 import { StatusBadge } from '../components/StatusBadge'
 import { Loading } from '../components/Loading'
-import { durationUnitLabel, formatDateTime, formatDuration, formatDurationValue, formatMoney, formatOverdue, splitDuration } from '../lib/format'
+import { durationUnitLabel, formatDateTime, formatDuration, formatDurationValue, formatMoney, formatOverdue } from '../lib/format'
 import {
   assetTypeLabels,
   rentalEventTypeLabels,
@@ -18,6 +18,7 @@ import {
   rentalStatusLabels,
   rentalStatusTones,
   tariffUnitLabels,
+  tariffUnitSeconds,
 } from '../lib/labels'
 import type { Tone } from '../lib/labels'
 
@@ -175,8 +176,17 @@ export function RentalDetailPage() {
   const topLevelItems = rental.items.filter((item) => !item.parentItemId)
   const childrenOf = (parentId: string): RentalItem[] =>
     rental.items.filter((item) => item.parentItemId === parentId)
-  // Срок и тариф из заявки (rent): длительность периода и сумма цен позиций за единицу срока
-  const duration = splitDuration(rental.startAt, rental.plannedEndAt)
+  // Срок и тариф из заявки (rent): единица срока — из позиций (тарифа аренды), а не из
+  // «красивого» разбиения периода: 7 дней по 1000 ₽/день — это «7 дней, 1000/день», а не «1 неделя, 1000/нед»
+  const durationUnit = topLevelItems[0]?.tariffUnit
+  const periodSeconds = rental.startAt && rental.plannedEndAt
+    ? Math.round((new Date(rental.plannedEndAt).getTime() - new Date(rental.startAt).getTime()) / 1000)
+    : 0
+  const unitSeconds = durationUnit ? tariffUnitSeconds[durationUnit] : 0
+  const durationLabel =
+    durationUnit && periodSeconds > 0 && periodSeconds % unitSeconds === 0
+      ? formatDurationValue(periodSeconds / unitSeconds, durationUnit)
+      : formatDuration(rental.startAt, rental.plannedEndAt)
   const rateSum = topLevelItems.reduce((sum, item) => sum + item.rate, 0)
   // Продления аренды (?? [] — на случай старого бэка без поля в ответе)
   const extensions = rental.extensions ?? []
@@ -322,18 +332,16 @@ export function RentalDetailPage() {
             </div>
           </div>
           <div className="space-y-2">
-            {rental.kind === 'rent' && duration && (
+            {rental.kind === 'rent' && durationUnit && (
               <>
                 <div className="flex justify-between gap-4">
                   <dt className="text-zinc-500">Срок</dt>
-                  <dd className="text-zinc-300">
-                    {formatDuration(rental.startAt, rental.plannedEndAt)}
-                  </dd>
+                  <dd className="text-zinc-300">{durationLabel}</dd>
                 </div>
                 <div className="flex justify-between gap-4">
                   <dt className="text-zinc-500">Тариф</dt>
                   <dd className="text-zinc-300">
-                    {formatMoney(rateSum)}/{durationUnitLabel(duration.unit)}
+                    {formatMoney(rateSum)}/{durationUnitLabel(durationUnit)}
                   </dd>
                 </div>
               </>
