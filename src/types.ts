@@ -232,6 +232,8 @@ export interface Tariff {
   unit: TariffUnit
   /** Цена, ₽ за unit */
   price: number
+  /** Вид договора: rent — тарифы аренды; rent_to_own — единственный недельный тариф выкупа */
+  kind: RentalKind
 }
 
 export interface Customer {
@@ -415,6 +417,8 @@ export interface Category {
   id: string
   name: string
   kind: CategoryKind
+  /** Системная статья (оплата/возврат аренды, покупка/продажа техники) — не удаляется */
+  system: boolean
   /** По статье есть операции — удалить нельзя */
   inUse: boolean
 }

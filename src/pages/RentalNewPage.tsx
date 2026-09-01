@@ -196,11 +196,13 @@ export function RentalNewPage() {
   const assetById = new Map(availableAssets.map((asset) => [asset.id, asset]))
   const modelById = new Map(models.map((model) => [model.id, model]))
 
-  /** Цена из справочника модели для единицы срока аренды; undefined — нет тарифа или не велосипед */
-  const catalogPrice = (assetId: string, unit: TariffUnit): number | undefined => {
+  /** Цена из справочника модели для вида договора и единицы срока; undefined — нет тарифа или не велосипед */
+  const catalogPrice = (assetId: string, unit: TariffUnit, rentalKind: RentalKind): number | undefined => {
     const asset = assetById.get(assetId)
     if (!asset || asset.type !== 'bike' || !asset.modelId) return undefined
-    return modelById.get(asset.modelId)?.tariffs.find((tariff) => tariff.unit === unit)?.price
+    return modelById.get(asset.modelId)?.tariffs.find(
+      (tariff) => tariff.unit === unit && (tariff.kind ?? 'rent') === rentalKind,
+    )?.price
   }
 
   const updateRow = (key: number, patch: Partial<ItemRow>) => {
@@ -214,14 +216,14 @@ export function RentalNewPage() {
     setRows((prev) =>
       prev.map((row) => {
         if (!row.assetId) return row
-        const price = catalogPrice(row.assetId, unit)
+        const price = catalogPrice(row.assetId, unit, 'rent')
         return price !== undefined ? { ...row, rate: String(price) } : row
       }),
     )
   }
 
-  // Под выкуп цены позиций — ₽/нед: при переключении kind переподставляем из справочника
-  // модели по неделе и сбрасываем ручную правку итога (он снова = сумме цен позиций × недель)
+  // Под выкуп цены позиций — ₽/нед из тарифа выкупа модели: при переключении kind
+  // переподставляем и сбрасываем ручную правку итога (он снова = сумме цен позиций × недель)
   const handleKindChange = (value: RentalKind) => {
     setKind(value)
     if (value === 'rent_to_own') {
@@ -229,7 +231,7 @@ export function RentalNewPage() {
       setRows((prev) =>
         prev.map((row) => {
           if (!row.assetId) return row
-          const price = catalogPrice(row.assetId, 'week')
+          const price = catalogPrice(row.assetId, 'week', 'rent_to_own')
           return price !== undefined ? { ...row, rate: String(price) } : row
         }),
       )
@@ -310,9 +312,9 @@ export function RentalNewPage() {
   // При выборе велосипеда дотягиваем смонтированные АКБ и зарядник как дочерние строки
   const handleAssetSelect = async (row: ItemRow, assetId: string) => {
     const asset = availableAssets.find((a) => a.id === assetId)
-    // Под выкуп единица тарифа всегда неделя — цену берём из недельного тарифа модели
+    // Под выкуп единица тарифа всегда неделя — цену берём из тарифа выкупа модели
     const price = assetId
-      ? catalogPrice(assetId, kind === 'rent_to_own' ? 'week' : durationUnit)
+      ? catalogPrice(assetId, kind === 'rent_to_own' ? 'week' : durationUnit, kind)
       : undefined
     setBuyoutTouched(false)
     updateRow(row.key, {

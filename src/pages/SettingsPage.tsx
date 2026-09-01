@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { ArrowDownLeft, ArrowUpRight, Ban, Bike, Check, Pencil, Plus, RotateCcw, Satellite, Smartphone, Trash2, X } from 'lucide-react'
+import { ArrowDownLeft, ArrowUpRight, Ban, Bike, Check, Lock, Pencil, Plus, RotateCcw, Satellite, Smartphone, Trash2, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { AccountOption, BikeModel, Category, CategoryKind, GpsTracker, SimCard, Tariff, TariffUnit, WriteOffReason } from '../types'
 import { Modal } from '../components/Modal'
@@ -1318,16 +1318,22 @@ function CategoryPanel({
         {categories.map((category) => (
           <li key={category.id} className="group flex items-center justify-between py-2.5">
             <span className="text-sm text-zinc-300">{category.name}</span>
-            {/* По статье с операциями удаление невозможно (409) — скрываем кнопку */}
-            {!category.inUse && (
-              <button
-                type="button"
-                title="Удалить статью"
-                onClick={() => onDelete(category.id)}
-                className="rounded-lg p-1.5 text-zinc-600 opacity-0 transition hover:bg-red-400/10 hover:text-red-400 group-hover:opacity-100"
-              >
-                <Trash2 size={14} />
-              </button>
+            {/* Системные статьи не удаляются (409) — замок; у статей с операциями скрываем кнопку */}
+            {category.system ? (
+              <span className="p-1.5 text-zinc-600" title="Системная статья — не удаляется">
+                <Lock size={14} />
+              </span>
+            ) : (
+              !category.inUse && (
+                <button
+                  type="button"
+                  title="Удалить статью"
+                  onClick={() => onDelete(category.id)}
+                  className="rounded-lg p-1.5 text-zinc-600 opacity-0 transition hover:bg-red-400/10 hover:text-red-400 group-hover:opacity-100"
+                >
+                  <Trash2 size={14} />
+                </button>
+              )
             )}
           </li>
         ))}
@@ -1632,6 +1638,7 @@ function BikeModelDetailsModal({
   const [newName, setNewName] = useState('')
   const [newUnit, setNewUnit] = useState<TariffUnit>('day')
   const [newPrice, setNewPrice] = useState('')
+  const [newBuyoutPrice, setNewBuyoutPrice] = useState('')
   const [editingInfo, setEditingInfo] = useState(false)
   const [infoBrand, setInfoBrand] = useState('')
   const [infoModel, setInfoModel] = useState('')
@@ -1641,6 +1648,9 @@ function BikeModelDetailsModal({
 
   if (!model) return null
   const tariffs = model.tariffs ?? []
+  // Тарифы аренды — сколько угодно (любая единица); тариф выкупа — один, всегда ₽/нед
+  const rentTariffs = tariffs.filter((tariff) => tariff.kind !== 'rent_to_own')
+  const buyoutTariff = tariffs.find((tariff) => tariff.kind === 'rent_to_own')
 
   const showError = (err: unknown, fallback: string) =>
     setError(err instanceof ApiError ? err.message : fallback)
@@ -1720,6 +1730,7 @@ function BikeModelDetailsModal({
           name: newName.trim(),
           unit: newUnit,
           price: Number(newPrice) || 0,
+          kind: 'rent',
         }),
       })
       setNewName('')
@@ -1730,6 +1741,29 @@ function BikeModelDetailsModal({
     } catch (err) {
       // 409: тариф с таким названием и единицей уже есть у модели
       showError(err, 'Не удалось добавить тариф')
+    }
+  }
+
+  // Тариф под выкуп — один на модель, всегда недельный; название фиксированное
+  const addBuyoutTariff = async (event: FormEvent) => {
+    event.preventDefault()
+    try {
+      await api('/tariffs', {
+        method: 'POST',
+        body: JSON.stringify({
+          modelId: model.id,
+          name: 'Под выкуп',
+          unit: 'week',
+          price: Number(newBuyoutPrice) || 0,
+          kind: 'rent_to_own',
+        }),
+      })
+      setNewBuyoutPrice('')
+      setError('')
+      await onChanged()
+    } catch (err) {
+      // 409: тариф под выкуп уже есть
+      showError(err, 'Не удалось добавить тариф под выкуп')
     }
   }
 
@@ -1840,14 +1874,14 @@ function BikeModelDetailsModal({
         )}
 
         <div>
-          <h3 className="mb-2 text-sm font-medium text-zinc-400">Тарифы</h3>
-          {tariffs.length === 0 ? (
+          <h3 className="mb-2 text-sm font-medium text-zinc-400">Тарифы аренды</h3>
+          {rentTariffs.length === 0 ? (
             <p className="rounded-lg border border-white/10 px-3 py-2.5 text-sm text-zinc-600">
               Тарифов нет — добавьте первый ниже
             </p>
           ) : (
             <ul className="divide-y divide-white/5 rounded-lg border border-white/10">
-              {tariffs.map((tariff) => (
+              {rentTariffs.map((tariff) => (
                 <li key={tariff.id} className="px-3 py-2.5">
                   {editingId === tariff.id ? (
                     <form onSubmit={saveEdit} className="flex items-center gap-2">
@@ -1949,6 +1983,88 @@ function BikeModelDetailsModal({
               </button>
             </div>
           </form>
+        </div>
+
+        {/* Тариф под выкуп: один на модель, всегда ₽/нед — из него конструктор выкупа берёт цену */}
+        <div>
+          <h3 className="mb-2 text-sm font-medium text-zinc-400">Тариф под выкуп</h3>
+          {buyoutTariff ? (
+            <div className="rounded-lg border border-white/10 px-3 py-2.5">
+              {editingId === buyoutTariff.id ? (
+                <form onSubmit={saveEdit} className="flex items-center gap-2">
+                  <input
+                    required
+                    value={editName}
+                    onChange={(event) => setEditName(event.target.value)}
+                    className="input"
+                    placeholder="Название"
+                  />
+                  <input
+                    required
+                    type="number"
+                    min={0}
+                    value={editPrice}
+                    onChange={(event) => setEditPrice(event.target.value)}
+                    className="input w-24 shrink-0"
+                    title="Цена, ₽/нед"
+                  />
+                  <button
+                    type="submit"
+                    title="Сохранить"
+                    className="shrink-0 rounded-lg p-2 text-emerald-400 transition hover:bg-emerald-400/10"
+                  >
+                    <Check size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    title="Отмена"
+                    onClick={() => setEditingId(null)}
+                    className="shrink-0 rounded-lg p-2 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
+                  >
+                    <X size={16} />
+                  </button>
+                </form>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-zinc-200">{buyoutTariff.name}</p>
+                    <p className="text-xs text-zinc-500">{formatMoney(buyoutTariff.price)}/нед</p>
+                  </div>
+                  <button
+                    type="button"
+                    title="Редактировать"
+                    onClick={() => startEdit(buyoutTariff)}
+                    className="shrink-0 rounded-lg p-2 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    title="Удалить"
+                    onClick={() => removeTariff(buyoutTariff)}
+                    className="shrink-0 rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <form onSubmit={addBuyoutTariff} className="flex gap-2">
+              <input
+                required
+                type="number"
+                min={0}
+                value={newBuyoutPrice}
+                onChange={(event) => setNewBuyoutPrice(event.target.value)}
+                className="input"
+                placeholder="Цена, ₽/нед"
+              />
+              <button type="submit" className="btn-primary shrink-0">
+                <Plus size={16} />
+              </button>
+            </form>
+          )}
         </div>
       </div>
     </Modal>
