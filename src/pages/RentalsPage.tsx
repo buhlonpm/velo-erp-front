@@ -5,6 +5,7 @@ import { api, ApiError } from '../api/client'
 import type { Rental } from '../types'
 import { StatusBadge } from '../components/StatusBadge'
 import { EmptyState } from '../components/EmptyState'
+import { Loading } from '../components/Loading'
 import { formatDateTime, formatMoney } from '../lib/format'
 import { rentalKindLabels, rentalStatusLabels, rentalStatusTones } from '../lib/labels'
 
@@ -87,7 +88,7 @@ export function RentalsPage() {
 
       <section className="panel overflow-hidden">
         {loading ? (
-          <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+          <Loading />
         ) : rentals.length === 0 ? (
           <EmptyState
             icon={ClipboardList}

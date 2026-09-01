@@ -8,6 +8,7 @@ import type { AccountOption, Asset, AssetStatus, AssetType, BikeModel } from '..
 import { Modal } from '../components/Modal'
 import { EmptyState } from '../components/EmptyState'
 import { StatusBadge } from '../components/StatusBadge'
+import { Loading } from '../components/Loading'
 import { dateInputToIso, formatNumber, todayDateInput } from '../lib/format'
 import { assetStatusLabels, assetStatusTones, assetTypeLabels } from '../lib/labels'
 
@@ -144,7 +145,7 @@ export function ParkPage() {
 
       <section className="panel overflow-hidden">
         {loading ? (
-          <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+          <Loading />
         ) : assets.length === 0 ? (
           <EmptyState
             icon={TypeIcon}

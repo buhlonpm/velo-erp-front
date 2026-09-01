@@ -32,6 +32,7 @@ import { MileageModal } from '../components/MileageModal'
 import { Modal } from '../components/Modal'
 import { StatusBadge } from '../components/StatusBadge'
 import { WriteOffModal } from '../components/WriteOffModal'
+import { Loading } from '../components/Loading'
 import { dateInputToIso, formatDate, formatDateTime, formatMoney, formatNumber, isoToDateInput, todayDateInput } from '../lib/format'
 import {
   assetEventTypeLabels,
@@ -174,7 +175,7 @@ export function AssetDetailPage() {
   )
 
   if (loading) {
-    return <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+    return <Loading />
   }
 
   if (!detail) {

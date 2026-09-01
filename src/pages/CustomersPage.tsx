@@ -6,6 +6,7 @@ import type { Customer } from '../types'
 import { Modal } from '../components/Modal'
 import { PhoneInput } from '../components/PhoneInput'
 import { EmptyState } from '../components/EmptyState'
+import { Loading } from '../components/Loading'
 
 export function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -93,7 +94,7 @@ export function CustomersPage() {
 
       <section className="panel overflow-hidden">
         {loading ? (
-          <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+          <Loading />
         ) : customers.length === 0 ? (
           <EmptyState
             icon={Users}

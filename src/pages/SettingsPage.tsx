@@ -6,6 +6,7 @@ import type { AccountOption, BikeModel, Category, CategoryKind, GpsTracker, SimC
 import { Modal } from '../components/Modal'
 import { PhoneInput } from '../components/PhoneInput'
 import { EmptyState } from '../components/EmptyState'
+import { Loading } from '../components/Loading'
 import { dateInputToIso, formatDate, formatMoney, formatNumber, isoToDateInput, todayDateInput } from '../lib/format'
 import { categoryKindLabels, tariffUnitLabels, writeOffReasonLabels } from '../lib/labels'
 import { UsersPage } from './UsersPage'
@@ -172,7 +173,7 @@ function SimCardsSettings() {
 
       <section className="panel overflow-hidden">
         {loading ? (
-          <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+          <Loading />
         ) : simCards.length === 0 ? (
           <EmptyState
             icon={Smartphone}
@@ -735,7 +736,7 @@ function GpsTrackersSettings() {
 
       <section className="panel overflow-hidden">
         {loading ? (
-          <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+          <Loading />
         ) : trackers.length === 0 ? (
           <EmptyState
             icon={Satellite}
@@ -1255,7 +1256,7 @@ function CategoriesSettings() {
   }
 
   if (loading) {
-    return <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+    return <Loading />
   }
 
   return (
@@ -1431,7 +1432,7 @@ function BikeModelsSettings() {
 
       <section className="panel overflow-hidden">
         {loading ? (
-          <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+          <Loading />
         ) : models.length === 0 ? (
           <EmptyState
             icon={Bike}

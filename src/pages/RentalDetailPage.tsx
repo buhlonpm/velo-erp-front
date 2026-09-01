@@ -9,6 +9,7 @@ import type { AccountOption, Customer, OverpaymentStrategy, Rental, RentalEvent,
 import { EmptyState } from '../components/EmptyState'
 import { Modal } from '../components/Modal'
 import { StatusBadge } from '../components/StatusBadge'
+import { Loading } from '../components/Loading'
 import { durationUnitLabel, formatDateTime, formatDuration, formatDurationValue, formatMoney, formatOverdue, splitDuration } from '../lib/format'
 import {
   assetTypeLabels,
@@ -123,7 +124,7 @@ export function RentalDetailPage() {
   )
 
   if (loading) {
-    return <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+    return <Loading />
   }
 
   if (!rental) {
@@ -926,7 +927,7 @@ function PaymentHistoryModal({
           </p>
         )}
         {payments === null ? (
-          <p className="text-sm text-zinc-500">Загрузка…</p>
+          <Loading padded={false} />
         ) : payments.length === 0 ? (
           <p className="text-sm text-zinc-500">Оплат пока нет</p>
         ) : (

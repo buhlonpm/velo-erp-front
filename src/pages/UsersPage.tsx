@@ -8,6 +8,7 @@ import type { Permission } from '../auth/permissions'
 import { Modal } from '../components/Modal'
 import { PhoneInput } from '../components/PhoneInput'
 import { EmptyState } from '../components/EmptyState'
+import { Loading } from '../components/Loading'
 
 type Role = 'ADMIN' | 'MANAGER'
 
@@ -91,7 +92,7 @@ export function UsersPage() {
 
       <div className="panel overflow-hidden">
         {loading ? (
-          <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+          <Loading />
         ) : users.length === 0 ? (
           <EmptyState icon={UserPlus} title="Нет пользователей" description="Добавьте первого сотрудника" />
         ) : (

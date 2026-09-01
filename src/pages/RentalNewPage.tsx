@@ -6,6 +6,7 @@ import { api, ApiError } from '../api/client'
 import type { Asset, AssetDetail, AssetType, BikeModel, Customer, Rental, RentalKind, TariffUnit } from '../types'
 import { formatDateTime, formatMoney, splitDuration } from '../lib/format'
 import { assetTypeLabels, rentalKindLabels, tariffUnitLabels, tariffUnitSeconds } from '../lib/labels'
+import { Loading } from '../components/Loading'
 
 /** Значение для input datetime-local из Date (в локальной TZ) */
 function toLocalInputValue(date: Date): string {
@@ -448,7 +449,7 @@ export function RentalNewPage() {
           Менять аренду можно только в черновике
         </p>
       ) : loading ? (
-        <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+        <Loading />
       ) : (
         <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_2fr]">
           {/* Клиент и условия */}

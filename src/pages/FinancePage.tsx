@@ -17,6 +17,7 @@ import { api, ApiError } from '../api/client'
 import type { Account, AccountType, Category, CategoryKind, Transaction } from '../types'
 import { Modal } from '../components/Modal'
 import { EmptyState } from '../components/EmptyState'
+import { Loading } from '../components/Loading'
 import { formatDateTime, formatMoney } from '../lib/format'
 import { accountTypeLabels, categoryKindLabels } from '../lib/labels'
 
@@ -162,7 +163,7 @@ export function FinancePage() {
   }
 
   if (loading) {
-    return <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+    return <Loading />
   }
 
   return (

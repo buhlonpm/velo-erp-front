@@ -11,6 +11,7 @@ import type { LucideIcon } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { AssetType, Dashboard, DashboardRental, DashboardTypeStats } from '../types'
 import { StatusBadge } from '../components/StatusBadge'
+import { Loading } from '../components/Loading'
 import { formatDateTime, formatMoney, formatOverdue, formatRemaining } from '../lib/format'
 import { rentalStatusLabels, rentalStatusTones } from '../lib/labels'
 
@@ -50,7 +51,7 @@ export function DashboardPage() {
   }, [])
 
   if (loading) {
-    return <p className="p-6 text-sm text-zinc-500">Загрузка…</p>
+    return <Loading />
   }
 
   const totalAssets = dashboard?.assets.reduce((sum, stats) => sum + stats.total, 0) ?? 0
