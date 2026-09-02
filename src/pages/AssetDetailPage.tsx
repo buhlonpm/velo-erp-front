@@ -12,6 +12,7 @@ import {
   ChevronDown,
   Gauge,
   Info,
+  Lock,
   Pencil,
   Plus,
   Receipt,
@@ -25,7 +26,9 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { api, ApiError } from '../api/client'
-import type { AccountOption, Asset, AssetDetail, AssetEventType, BikeModel, Category, CategoryKind, GpsTracker, MileageLogEntry } from '../types'
+import { useAuth } from '../auth/AuthContext'
+import { hasPermission, PERMISSIONS } from '../auth/permissions'
+import type { AccountOption, Asset, AssetDetail, AssetEventType, BikeModel, Category, CategoryKind, ChargeCycleLogEntry, GpsTracker, MileageLogEntry, Transaction } from '../types'
 import { EmptyState } from '../components/EmptyState'
 import { ChargeCyclesModal } from '../components/ChargeCyclesModal'
 import { MileageModal } from '../components/MileageModal'
@@ -53,11 +56,15 @@ const eventIcons: Record<AssetEventType, LucideIcon> = {
   tracker_install: Satellite,
   tracker_remove: Satellite,
   write_off: Ban,
+  income: ArrowUpRight,
+  expense: ArrowDownLeft,
 }
 
 export function AssetDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const canViewFinance = hasPermission(user, PERMISSIONS.FINANCE_VIEW)
 
   const [detail, setDetail] = useState<AssetDetail | null>(null)
   const [accounts, setAccounts] = useState<AccountOption[]>([])
@@ -69,6 +76,8 @@ export function AssetDetailPage() {
   const [mileageOpen, setMileageOpen] = useState(false)
   const [chargeCyclesOpen, setChargeCyclesOpen] = useState(false)
   const [transactionOpen, setTransactionOpen] = useState(false)
+  // Операция в режиме правки (null — создание новой); правка/удаление — с правом finance:view
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [trackerModalOpen, setTrackerModalOpen] = useState(false)
   const [batteryModalOpen, setBatteryModalOpen] = useState(false)
@@ -131,6 +140,18 @@ export function AssetDetailPage() {
     await loadDetail()
   }
 
+  // Удаление операции актива (с правом finance:view); баланс счёта вычисляемый — сам пересчитается
+  const deleteTransaction = async (transaction: Transaction) => {
+    const noun = transaction.kind === 'income' ? 'приход' : 'расход'
+    if (!window.confirm(`Удалить ${noun} ${formatMoney(transaction.amount)}?`)) return
+    try {
+      await api(`/finance/transactions/${transaction.id}`, { method: 'DELETE' })
+      await loadDetail()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить операцию')
+    }
+  }
+
   const saveChargeCycles = async (assetId: string, cycles: number, recordedAt: string | null) => {
     await api(`/assets/${assetId}/charge-cycles`, {
       method: 'POST',
@@ -138,6 +159,20 @@ export function AssetDetailPage() {
     })
     await loadDetail()
     setChargeCyclesOpen(false)
+  }
+
+  // Правка/удаление записей журнала циклов — механика как у пробега
+  const saveChargeCycleEntry = async (entry: ChargeCycleLogEntry, cycles: string, recordedAt: string) => {
+    await api(`/assets/${id}/charge-cycles/${entry.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ cycles: Number(cycles), recordedAt: new Date(recordedAt).toISOString() }),
+    })
+    await loadDetail()
+  }
+
+  const deleteChargeCycleEntry = async (entry: ChargeCycleLogEntry) => {
+    await api(`/assets/${id}/charge-cycles/${entry.id}`, { method: 'DELETE' })
+    await loadDetail()
   }
 
   const removeTracker = async () => {
@@ -318,11 +353,9 @@ export function AssetDetailPage() {
           {asset.type === 'charger' && (
             <>
               <div className="flex justify-between gap-4">
-                <dt className="text-zinc-500">Мощность / разъём</dt>
+                <dt className="text-zinc-500">Мощность</dt>
                 <dd className="text-zinc-300">
                   {asset.powerW != null ? `${asset.powerW} Вт` : '—'}
-                  {' / '}
-                  {asset.connector || '—'}
                 </dd>
               </div>
               <div className="flex justify-between gap-4">
@@ -637,53 +670,60 @@ export function AssetDetailPage() {
       </section>
       )}
 
-      {/* Циклы перезарядки: только у АКБ, запись вручную */}
+      {/* Циклы перезарядки: только у АКБ — текущее значение, добавление и история записей */}
       {asset.type === 'battery' && (
       <section className="panel">
         <div className={`flex items-center justify-between px-5 py-4 ${cyclesExpanded ? 'border-b border-white/5' : ''}`}>
-          <button
-            type="button"
-            onClick={() => setCyclesExpanded((value) => !value)}
-            className="inline-flex items-center gap-2 font-semibold text-zinc-100 transition hover:text-white"
-          >
-            <ChevronDown
-              size={16}
-              className={`text-zinc-500 transition-transform ${cyclesExpanded ? '' : '-rotate-90'}`}
-            />
-            Циклы перезарядки
-            <span className="text-sm font-normal text-zinc-500">{chargeCycleLog.length}</span>
-          </button>
-          {!writtenOff && (
-            <button type="button" onClick={() => setChargeCyclesOpen(true)} className="btn-primary">
+          <div className="flex items-center gap-3">
+            <span className="rounded-lg bg-white/5 p-2 text-zinc-400">
               <RefreshCw size={16} />
-              Записать циклы
+            </span>
+            <div className="flex items-baseline gap-2">
+              <h2 className="font-semibold text-zinc-100">Циклы перезарядки</h2>
+              <span className="text-sm text-zinc-400">
+                {asset.chargeCycles != null ? formatNumber(asset.chargeCycles) : 'не записаны'}
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCyclesExpanded((value) => !value)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-2 text-xs font-medium text-zinc-400 transition hover:border-white/25 hover:text-zinc-200"
+            >
+              <ChevronDown
+                size={14}
+                className={`transition-transform ${cyclesExpanded ? '' : '-rotate-90'}`}
+              />
+              История циклов
+              <span className="text-zinc-600">{chargeCycleLog.length}</span>
             </button>
-          )}
+            {!writtenOff && (
+              <button
+                type="button"
+                onClick={() => setChargeCyclesOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/30 px-3 py-2 text-xs font-medium text-emerald-400 transition hover:bg-emerald-400/10"
+              >
+                <Plus size={14} />
+                Записать циклы
+              </button>
+            )}
+          </div>
         </div>
         {cyclesExpanded && (
           chargeCycleLog.length === 0 ? (
             <EmptyState icon={RefreshCw} title="Записей нет" description="Запишите первое значение циклов" />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-white/5">
-                    <th className="th">Циклы</th>
-                    <th className="th text-right">Дата</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {chargeCycleLog.map((entry, index) => (
-                    <tr
-                      key={entry.id}
-                      className={`transition hover:bg-white/5 ${index % 2 === 1 ? 'bg-white/[0.02]' : ''}`}
-                    >
-                      <td className="td">{formatNumber(entry.cycles)}</td>
-                      <td className="td text-right text-zinc-500">{formatDateTime(entry.recordedAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-2 p-4">
+              {chargeCycleLog.map((entry) => (
+                <ChargeCycleRow
+                  key={entry.id}
+                  entry={entry}
+                  readOnly={writtenOff}
+                  onSave={saveChargeCycleEntry}
+                  onDelete={deleteChargeCycleEntry}
+                />
+              ))}
             </div>
           )
         )}
@@ -706,7 +746,14 @@ export function AssetDetailPage() {
             <span className="text-sm font-normal text-zinc-500">{transactions.length}</span>
           </button>
           {!writtenOff && (
-            <button type="button" onClick={() => setTransactionOpen(true)} className="btn-primary">
+            <button
+              type="button"
+              onClick={() => {
+                setEditingTransaction(null)
+                setTransactionOpen(true)
+              }}
+              className="btn-primary"
+            >
               <Plus size={16} />
               Добавить операцию
             </button>
@@ -729,6 +776,7 @@ export function AssetDetailPage() {
                   <th className="th">Статья</th>
                   <th className="th">Комментарий</th>
                   <th className="th text-right">Сумма</th>
+                  <th className="th text-right" />
                 </tr>
               </thead>
               <tbody>
@@ -757,6 +805,40 @@ export function AssetDetailPage() {
                           {isIncome ? '+' : '−'}
                           {formatMoney(transaction.amount)}
                         </span>
+                      </td>
+                      <td className="td text-right">
+                        {/* Системные операции (покупка/продажа) не правятся — меняется само действие;
+                            остальные правятся отсюда (в разделе «Финансы» они read-only) */}
+                        {transaction.system ? (
+                          <span
+                            className="inline-flex p-2 text-zinc-600"
+                            title="Системная операция — создана автоматически (покупка/продажа техники), изменить нельзя"
+                          >
+                            <Lock size={14} />
+                          </span>
+                        ) : canViewFinance ? (
+                          <span className="inline-flex gap-1">
+                            <button
+                              type="button"
+                              title="Редактировать"
+                              onClick={() => {
+                                setEditingTransaction(transaction)
+                                setTransactionOpen(true)
+                              }}
+                              className="rounded-lg p-2 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
+                            >
+                              <Pencil size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              title="Удалить"
+                              onClick={() => void deleteTransaction(transaction)}
+                              className="rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </span>
+                        ) : null}
                       </td>
                     </tr>
                   )
@@ -883,24 +965,32 @@ export function AssetDetailPage() {
 
       <MileageModal
         asset={mileageOpen ? asset : null}
+        minRecordedAt={mileageLog[0]?.recordedAt ?? null}
         onClose={() => setMileageOpen(false)}
         onSave={saveMileage}
       />
 
       <ChargeCyclesModal
         asset={chargeCyclesOpen ? asset : null}
+        minRecordedAt={chargeCycleLog[0]?.recordedAt ?? null}
         onClose={() => setChargeCyclesOpen(false)}
         onSave={saveChargeCycles}
       />
 
       <AssetTransactionModal
+        key={editingTransaction?.id ?? 'new'}
         open={transactionOpen}
         assetId={asset.id}
+        editing={editingTransaction}
         accounts={accounts}
         categories={categories}
-        onClose={() => setTransactionOpen(false)}
+        onClose={() => {
+          setTransactionOpen(false)
+          setEditingTransaction(null)
+        }}
         onSaved={() => {
           setTransactionOpen(false)
+          setEditingTransaction(null)
           void loadDetail()
         }}
       />
@@ -1055,10 +1145,11 @@ function TotalCard({
   )
 }
 
-/** Операция, привязанная к велосипеду (POST /finance/transactions с assetId) */
+/** Операция, привязанная к активу (POST /finance/transactions с assetId); с editing — правка (PATCH) */
 function AssetTransactionModal({
   open,
   assetId,
+  editing,
   accounts,
   categories,
   onClose,
@@ -1066,16 +1157,17 @@ function AssetTransactionModal({
 }: {
   open: boolean
   assetId: string
+  editing: Transaction | null
   accounts: AccountOption[]
   categories: Category[]
   onClose: () => void
   onSaved: () => void
 }) {
-  const [kind, setKind] = useState<CategoryKind>('income')
-  const [accountId, setAccountId] = useState('')
-  const [categoryId, setCategoryId] = useState('')
-  const [amount, setAmount] = useState('')
-  const [comment, setComment] = useState('')
+  const [kind, setKind] = useState<CategoryKind>(editing?.kind ?? 'income')
+  const [accountId, setAccountId] = useState(editing?.accountId ?? '')
+  const [categoryId, setCategoryId] = useState(editing?.categoryId ?? '')
+  const [amount, setAmount] = useState(editing ? String(editing.amount) : '')
+  const [comment, setComment] = useState(editing?.comment ?? '')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -1088,29 +1180,44 @@ function AssetTransactionModal({
     setSubmitting(true)
     setError('')
     try {
-      await api('/finance/transactions', {
-        method: 'POST',
-        body: JSON.stringify({
-          accountId,
-          categoryId,
-          kind,
-          amount: value,
-          comment: comment.trim(),
-          assetId,
-        }),
-      })
+      if (editing) {
+        // Правка: тип операции и привязка к активу не меняются (как и у аренды)
+        await api(`/finance/transactions/${editing.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            accountId,
+            categoryId,
+            amount: value,
+            comment: comment.trim(),
+          }),
+        })
+      } else {
+        await api('/finance/transactions', {
+          method: 'POST',
+          body: JSON.stringify({
+            accountId,
+            categoryId,
+            kind,
+            amount: value,
+            comment: comment.trim(),
+            assetId,
+          }),
+        })
+      }
       onSaved()
     } catch (err) {
       // 403: недостаточно прав (например, расход не для админа) — текст сервера
-      setError(err instanceof ApiError ? err.message : 'Не удалось добавить операцию')
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить операцию')
     } finally {
       setSubmitting(false)
     }
   }
 
   return (
-    <Modal open={open} title="Операция по велосипеду" onClose={onClose}>
+    <Modal open={open} title={editing ? 'Редактировать операцию' : 'Операция по активу'} onClose={onClose}>
       <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Тип операции задаётся при создании; при правке он фиксирован */}
+        {!editing && (
         <div className="flex gap-1 rounded-lg border border-white/10 p-1">
           {(['income', 'expense'] as CategoryKind[]).map((value) => (
             <button
@@ -1132,6 +1239,7 @@ function AssetTransactionModal({
             </button>
           ))}
         </div>
+        )}
         <div>
           <label className="mb-1.5 block text-sm text-zinc-400">Счёт</label>
           <select
@@ -1193,7 +1301,7 @@ function AssetTransactionModal({
         )}
 
         <button type="submit" disabled={submitting} className="btn-primary w-full">
-          Добавить
+          {editing ? 'Сохранить' : 'Добавить'}
         </button>
       </form>
     </Modal>
@@ -1231,7 +1339,6 @@ function AssetEditModal({
   const [vin, setVin] = useState(asset.vin ?? '')
   const [capacityAh, setCapacityAh] = useState(asset.capacityAh != null ? String(asset.capacityAh) : '')
   const [powerW, setPowerW] = useState(asset.powerW != null ? String(asset.powerW) : '')
-  const [connector, setConnector] = useState(asset.connector ?? '')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -1254,7 +1361,6 @@ function AssetEditModal({
           ...(isBattery && voltage.trim() ? { voltage: Number(voltage) } : {}),
           ...(isBattery && capacityAh.trim() ? { capacityAh: Number(capacityAh) } : {}),
           ...(isCharger && powerW.trim() ? { powerW: Number(powerW) } : {}),
-          ...(isCharger ? { connector: connector.trim() } : {}),
         }),
       })
       onSaved()
@@ -1343,25 +1449,15 @@ function AssetEditModal({
           </div>
         )}
         {isCharger && (
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="mb-1.5 block text-sm text-zinc-400">Мощность, Вт</label>
-              <input
-                type="number"
-                min={0}
-                value={powerW}
-                onChange={(event) => setPowerW(event.target.value)}
-                className="input"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-sm text-zinc-400">Разъём</label>
-              <input
-                value={connector}
-                onChange={(event) => setConnector(event.target.value)}
-                className="input"
-              />
-            </div>
+          <div>
+            <label className="mb-1.5 block text-sm text-zinc-400">Мощность, Вт</label>
+            <input
+              type="number"
+              min={0}
+              value={powerW}
+              onChange={(event) => setPowerW(event.target.value)}
+              className="input"
+            />
           </div>
         )}
         <div>
@@ -1629,6 +1725,7 @@ function MileageRow({
         <span className="shrink-0 text-sm text-zinc-500">км</span>
         <input
           type="datetime-local"
+          max={toLocalInputValue(new Date())}
           value={recordedAt}
           disabled={readOnly}
           onChange={(event) => setRecordedAt(event.target.value)}
@@ -1641,6 +1738,87 @@ function MileageRow({
               type="button"
               disabled={busy}
               onClick={() => void run(() => onSave(entry, mileageKm, recordedAt))}
+              title="Сохранить"
+              className="shrink-0 rounded-lg p-2 text-emerald-400 transition hover:bg-emerald-400/10"
+            >
+              <Check size={16} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(() => onDelete(entry))}
+              title="Удалить запись"
+              className="shrink-0 rounded-lg p-2 text-zinc-500 transition hover:bg-red-400/10 hover:text-red-400"
+            >
+              <Trash2 size={16} />
+            </button>
+          ))}
+      </div>
+      {error && <p className="mt-1.5 pl-1 text-xs text-red-400">{error}</p>}
+    </div>
+  )
+}
+
+/** Строка журнала циклов перезарядки с инлайн-правкой/удалением — механика как у пробега */
+function ChargeCycleRow({
+  entry,
+  readOnly,
+  onSave,
+  onDelete,
+}: {
+  entry: ChargeCycleLogEntry
+  readOnly: boolean
+  onSave: (entry: ChargeCycleLogEntry, cycles: string, recordedAt: string) => Promise<void>
+  onDelete: (entry: ChargeCycleLogEntry) => Promise<void>
+}) {
+  const [cycles, setCycles] = useState(String(entry.cycles))
+  const [recordedAt, setRecordedAt] = useState(() => toLocalInputValue(new Date(entry.recordedAt)))
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const dirty =
+    cycles !== String(entry.cycles) ||
+    recordedAt !== toLocalInputValue(new Date(entry.recordedAt))
+
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true)
+    setError('')
+    try {
+      await action()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить запись')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-white/10 p-3">
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          min={0}
+          value={cycles}
+          disabled={readOnly}
+          onChange={(event) => setCycles(event.target.value)}
+          className="input w-28 shrink-0"
+          title="Циклы перезарядки"
+        />
+        <input
+          type="datetime-local"
+          max={toLocalInputValue(new Date())}
+          value={recordedAt}
+          disabled={readOnly}
+          onChange={(event) => setRecordedAt(event.target.value)}
+          className="input"
+          title="Дата записи"
+        />
+        {!readOnly &&
+          (dirty ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(() => onSave(entry, cycles, recordedAt))}
               title="Сохранить"
               className="shrink-0 rounded-lg p-2 text-emerald-400 transition hover:bg-emerald-400/10"
             >

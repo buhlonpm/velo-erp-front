@@ -7,6 +7,7 @@ import type { Asset, AssetDetail, AssetType, BikeModel, Customer, Rental, Rental
 import { formatDateTime, formatMoney, splitDuration } from '../lib/format'
 import { assetTypeLabels, rentalKindLabels, tariffUnitLabels, tariffUnitSeconds } from '../lib/labels'
 import { Loading } from '../components/Loading'
+import { Modal } from '../components/Modal'
 
 /** Значение для input datetime-local из Date (в локальной TZ) */
 function toLocalInputValue(date: Date): string {
@@ -78,7 +79,6 @@ function assetFromItem(item: {
     bundledBikeId: null,
     bundledBikeName: null,
     powerW: null,
-    connector: null,
   }
 }
 
@@ -110,6 +110,8 @@ export function RentalNewPage() {
   const [comment, setComment] = useState('')
   const [rows, setRows] = useState<ItemRow[]>([newRow()])
   const [submitting, setSubmitting] = useState(false)
+  // Велосипеды без смонтированной АКБ/зарядника — перед сохранением просим подтверждение
+  const [kitWarning, setKitWarning] = useState<{ name: string; missing: string[] }[] | null>(null)
 
   useEffect(() => {
     const load = async () => {
@@ -382,6 +384,29 @@ export function RentalNewPage() {
         return
       }
     }
+
+    // Комплект: велосипед без смонтированной АКБ и/или зарядника — по умолчанию его нужно
+    // докомплектовать, поэтому просим подтверждение (редкие случаи — можно выдать как есть)
+    const incomplete = chosenRows
+      .filter((row) => assetById.get(row.assetId)?.type === 'bike')
+      .map((row) => {
+        const asset = assetById.get(row.assetId)!
+        const missing: string[] = []
+        if (!row.children.some((child) => child.type === 'battery')) missing.push('АКБ')
+        if (!row.children.some((child) => child.type === 'charger')) missing.push('зарядника')
+        return { name: `${asset.name} (${asset.inventoryNumber})`, missing }
+      })
+      .filter((entry) => entry.missing.length > 0)
+    if (incomplete.length > 0) {
+      setKitWarning(incomplete)
+      return
+    }
+
+    await submit()
+  }
+
+  const submit = async () => {
+    const chosenRows = rows.filter((row) => row.assetId)
 
     // Дочерний комплект (АКБ/зарядник) не шлём — сервер подтянет его сам с тарифом 0.
     // Единицу тарифа не шлём: у rent она = единице срока аренды, у rent_to_own — всегда week.
@@ -724,6 +749,45 @@ export function RentalNewPage() {
           </section>
         </form>
       )}
+
+      {/* Подтверждение выдачи велосипеда без комплекта (нет АКБ/зарядника) */}
+      <Modal open={kitWarning != null} title="Велосипед без комплекта" onClose={() => setKitWarning(null)}>
+        <div className="space-y-4">
+          <ul className="space-y-1.5 text-sm text-zinc-300">
+            {kitWarning?.map((entry) => (
+              <li key={entry.name}>
+                <span className="font-medium text-zinc-100">{entry.name}</span>
+                {' — нет '}
+                {entry.missing.join(' и ')}
+              </li>
+            ))}
+          </ul>
+          <p className="text-sm text-zinc-400">
+            По умолчанию велосипед нужно докомплектовать (смонтировать АКБ и зарядник в карточке
+            велосипеда). Точно оформить {kind === 'rent_to_own' ? 'выкуп' : 'аренду'} без комплекта?
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setKitWarning(null)}
+              className="flex-1 rounded-lg border border-white/10 px-4 py-2 text-sm text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                setKitWarning(null)
+                void submit()
+              }}
+              className="btn-primary flex-1"
+            >
+              Оформить без комплекта
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

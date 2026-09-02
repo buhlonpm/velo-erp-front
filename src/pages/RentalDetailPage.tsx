@@ -787,9 +787,10 @@ export function RentalDetailPage() {
         />
       )}
 
-      {/* Продление: только срок; оплата принимается отдельно через блок оплаты */}
+      {/* Продление: только срок в единице аренды; оплата — отдельно через блок оплаты */}
       {extendOpen && rental && (
         <ExtendModal
+          unit={durationUnit ?? 'day'}
           onClose={() => setExtendOpen(false)}
           onSubmit={async (duration, durationUnit) => {
             await api(`/rentals/${id}/extend`, {
@@ -811,7 +812,7 @@ export function RentalDetailPage() {
           title="Изменить продление"
           submitLabel="Сохранить"
           initialDuration={String(editExtension.duration)}
-          initialUnit={editExtension.durationUnit}
+          unit={durationUnit ?? editExtension.durationUnit}
           onClose={() => setEditExtension(null)}
           onSubmit={async (duration, durationUnit) => {
             await api(`/rentals/${id}/extensions/${editExtension.id}`, {
@@ -1647,27 +1648,29 @@ function EarlyReturnModal({
 }
 
 /**
- * Модалка продления: новый конец = старый конец периода + duration × unit.
+ * Модалка продления: новый конец = старый конец периода + duration × единица аренды.
+ * Единица не выбирается — продление строго в единице аренды (бэк иначе даёт 409);
+ * другой период = завершить аренду и завести новую.
  * Денежных полей нет — оплата принимается отдельно через блок оплаты.
- * Используется и для правки существующего продления (title/submitLabel/initial*).
+ * Используется и для правки существующего продления (title/submitLabel/initialDuration).
  */
 function ExtendModal({
   title = 'Продлить аренду',
   submitLabel = 'Продлить',
   initialDuration = '',
-  initialUnit = 'day',
+  unit,
   onClose,
   onSubmit,
 }: {
   title?: string
   submitLabel?: string
   initialDuration?: string
-  initialUnit?: TariffUnit
+  /** Единица срока аренды (из позиций) — продление только в ней */
+  unit: TariffUnit
   onClose: () => void
   onSubmit: (duration: string, durationUnit: TariffUnit) => Promise<void>
 }) {
   const [duration, setDuration] = useState(initialDuration)
-  const [durationUnit, setDurationUnit] = useState<TariffUnit>(initialUnit)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -1680,7 +1683,7 @@ function ExtendModal({
     setSubmitting(true)
     setError('')
     try {
-      await onSubmit(duration, durationUnit)
+      await onSubmit(duration, unit)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось сохранить продление')
     } finally {
@@ -1698,7 +1701,7 @@ function ExtendModal({
         )}
         <div>
           <label className="mb-1.5 block text-sm text-zinc-400">Продлить на *</label>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             <input
               type="number"
               min={1}
@@ -1708,18 +1711,11 @@ function ExtendModal({
               className="input w-24 shrink-0"
               placeholder="3"
             />
-            <select
-              value={durationUnit}
-              onChange={(event) => setDurationUnit(event.target.value as TariffUnit)}
-              className="input"
-            >
-              {(Object.keys(tariffUnitLabels) as TariffUnit[]).map((unit) => (
-                <option key={unit} value={unit}>
-                  {tariffUnitLabels[unit]}
-                </option>
-              ))}
-            </select>
+            <span className="text-sm text-zinc-400">× {durationUnitLabel(unit)}</span>
           </div>
+          <p className="mt-1.5 text-xs text-zinc-600">
+            Продление — только в единице аренды; нужен другой период — завершите аренду и заведите новую
+          </p>
         </div>
         <button type="submit" disabled={submitting} className="btn-primary w-full">
           {submitLabel}

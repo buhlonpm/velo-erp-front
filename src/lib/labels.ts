@@ -53,11 +53,13 @@ export const assetEventTypeLabels: Record<AssetEventType, string> = {
   purchase: 'Покупка',
   mileage: 'Пробег',
   charge_cycles: 'Циклы перезарядки',
-  mount: 'Монтаж АКБ',
-  unmount: 'Демонтаж АКБ',
+  mount: 'Монтаж',
+  unmount: 'Демонтаж',
   tracker_install: 'Установка трекера',
   tracker_remove: 'Снятие трекера',
   write_off: 'Выбытие',
+  income: 'Приход',
+  expense: 'Расход',
 }
 
 export const rentalStatusLabels: Record<RentalStatus, string> = {

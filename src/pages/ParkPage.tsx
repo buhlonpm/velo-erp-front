@@ -218,8 +218,6 @@ export function ParkPage() {
                         <td className="td">{asset.name}</td>
                         <td className="td text-zinc-500">
                           {asset.powerW != null ? `${asset.powerW} Вт` : '—'}
-                          {' / '}
-                          {asset.connector || '—'}
                         </td>
                       </>
                     )}
@@ -282,7 +280,6 @@ function AssetModal({
   const [voltage, setVoltage] = useState('')
   const [capacityAh, setCapacityAh] = useState('')
   const [powerW, setPowerW] = useState('')
-  const [connector, setConnector] = useState('')
   // Покупка (все типы) — date input хранит YYYY-MM-DD
   const [purchasedAt, setPurchasedAt] = useState('')
   const [purchasePrice, setPurchasePrice] = useState('')
@@ -368,7 +365,6 @@ function AssetModal({
         body = {
           ...body,
           ...(powerW.trim() ? { powerW: Number(powerW) } : {}),
-          ...(connector.trim() ? { connector: connector.trim() } : {}),
         }
       }
     }
@@ -492,27 +488,16 @@ function AssetModal({
         )}
 
         {type === 'charger' && (
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="mb-1.5 block text-sm text-zinc-400">Мощность, Вт</label>
-              <input
-                type="number"
-                min={0}
-                value={powerW}
-                onChange={(event) => setPowerW(event.target.value)}
-                className="input"
-                placeholder="120"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-sm text-zinc-400">Разъём</label>
-              <input
-                value={connector}
-                onChange={(event) => setConnector(event.target.value)}
-                className="input"
-                placeholder="XLR"
-              />
-            </div>
+          <div>
+            <label className="mb-1.5 block text-sm text-zinc-400">Мощность, Вт</label>
+            <input
+              type="number"
+              min={0}
+              value={powerW}
+              onChange={(event) => setPowerW(event.target.value)}
+              className="input"
+              placeholder="120"
+            />
           </div>
         )}
 

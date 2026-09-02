@@ -12,21 +12,23 @@ function toLocalInputValue(date: Date): string {
 
 /**
  * Запись пробега в журнал велосипеда (POST /assets/{id}/mileage).
- * Два сценария: «сейчас» (recordedAt не шлём, бэк проставит момент с секундами)
- * и ручной ввод даты/времени (datetime-local, точность до минут).
+ * Дата/время по умолчанию — текущий момент, можно изменить на прошлое;
+ * будущая дата запрещена (и на бэке — 400).
  */
 export function MileageModal({
   asset,
+  minRecordedAt,
   onClose,
   onSave,
 }: {
   asset: Asset | null
+  /** Дата последней записи журнала — раньше неё ставить нельзя (бэк отвечает 409) */
+  minRecordedAt?: string | null
   onClose: () => void
   /** Должен кидать ошибку (ApiError) — модалка покажет её текстом и не закроется */
   onSave: (assetId: string, mileageKm: number, recordedAt: string | null) => Promise<void>
 }) {
   const [mileageKm, setMileageKm] = useState('')
-  const [customDate, setCustomDate] = useState(false)
   const [recordedAt, setRecordedAt] = useState(() => toLocalInputValue(new Date()))
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -36,12 +38,11 @@ export function MileageModal({
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
     const value = Number(mileageKm)
-    if (Number.isNaN(value) || value < 0) return
-    if (customDate && !recordedAt) return
+    if (Number.isNaN(value) || value < 0 || !recordedAt) return
     setSubmitting(true)
     setError('')
     try {
-      await onSave(asset.id, value, customDate ? new Date(recordedAt).toISOString() : null)
+      await onSave(asset.id, value, new Date(recordedAt).toISOString())
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось записать пробег')
     } finally {
@@ -74,36 +75,17 @@ export function MileageModal({
           )}
         </div>
 
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 text-sm text-zinc-300">
-            <input
-              type="radio"
-              name="mileage-date-mode"
-              checked={!customDate}
-              onChange={() => setCustomDate(false)}
-              className="accent-emerald-400"
-            />
-            Сейчас
-          </label>
-          <label className="flex items-center gap-2 text-sm text-zinc-300">
-            <input
-              type="radio"
-              name="mileage-date-mode"
-              checked={customDate}
-              onChange={() => setCustomDate(true)}
-              className="accent-emerald-400"
-            />
-            Указать дату и время
-          </label>
-          {customDate && (
-            <input
-              required
-              type="datetime-local"
-              value={recordedAt}
-              onChange={(event) => setRecordedAt(event.target.value)}
-              className="input"
-            />
-          )}
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Дата и время</label>
+          <input
+            required
+            type="datetime-local"
+            min={minRecordedAt ? toLocalInputValue(new Date(minRecordedAt)) : undefined}
+            max={toLocalInputValue(new Date())}
+            value={recordedAt}
+            onChange={(event) => setRecordedAt(event.target.value)}
+            className="input"
+          />
         </div>
 
         {error && (

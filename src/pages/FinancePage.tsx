@@ -372,14 +372,16 @@ function OperationsTab({
                         </span>
                       </td>
                       <td className="td text-right">
-                        {/* Операции аренды правятся только из карточки аренды, системные — никак */}
-                        {transaction.system || transaction.rentalId != null ? (
+                        {/* Операции аренды/актива правятся только из их карточек, системные — никак */}
+                        {transaction.system || transaction.rentalId != null || transaction.assetId != null ? (
                           <span
                             className="inline-flex p-2 text-zinc-600"
                             title={
                               transaction.system
                                 ? 'Системная операция — создана автоматически (покупка/продажа техники), изменить нельзя'
-                                : 'Операция аренды — правится из карточки аренды'
+                                : transaction.rentalId != null
+                                  ? 'Операция аренды — правится из карточки аренды'
+                                  : 'Операция актива — правится из карточки актива'
                             }
                           >
                             <Lock size={14} />

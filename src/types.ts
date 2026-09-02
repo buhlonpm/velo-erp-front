@@ -41,6 +41,8 @@ export const AssetEventType = {
   TrackerInstall: 'tracker_install',
   TrackerRemove: 'tracker_remove',
   WriteOff: 'write_off',
+  Income: 'income',
+  Expense: 'expense',
 } as const
 export type AssetEventType = (typeof AssetEventType)[keyof typeof AssetEventType]
 
@@ -60,7 +62,7 @@ export interface AssetEvent {
 /**
  * Актив парка. Типо-специфичные поля null для чужих типов:
  * bike — modelId/gpsTracker*, battery — voltage/capacityAh/chargeCycles,
- * charger — powerW/connector. description/purchasedAt/purchasePrice — общие.
+ * charger — powerW. description/purchasedAt/purchasePrice — общие.
  * Пробег (bike/battery) — только ручной ввод через журнал.
  */
 export interface Asset {
@@ -103,8 +105,6 @@ export interface Asset {
   bundledBikeName: string | null
   /** Мощность, Вт (charger) */
   powerW: number | null
-  /** Разъём (charger) */
-  connector: string | null
 }
 
 /** SIM-карта из справочника */
