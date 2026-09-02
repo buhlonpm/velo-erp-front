@@ -877,26 +877,30 @@ export function AssetDetailPage() {
                   <th className="th">Клиент</th>
                   <th className="th">Начало</th>
                   <th className="th">Окончание</th>
-                  <th className="th text-right">Сумма</th>
+                  <th className="th text-right">Сумма аренды</th>
+                  <th className="th text-right">Принёс актив</th>
                   <th className="th">Статус</th>
                 </tr>
               </thead>
               <tbody>
-                {rentals.map((rental, index) => (
+                {rentals.map((entry, index) => (
                   <tr
-                    key={rental.id}
+                    key={entry.rental.id}
                     className={`transition hover:bg-white/5 ${index % 2 === 1 ? 'bg-white/[0.02]' : ''}`}
                   >
-                    <td className="td font-medium text-zinc-200">{rental.customerName}</td>
-                    <td className="td text-zinc-500">{formatDateTime(rental.startAt)}</td>
+                    <td className="td font-medium text-zinc-200">{entry.rental.customerName}</td>
+                    <td className="td text-zinc-500">{formatDateTime(entry.rental.startAt)}</td>
                     <td className="td text-zinc-500">
-                      {rental.plannedEndAt ? formatDateTime(rental.plannedEndAt) : '—'}
+                      {entry.rental.plannedEndAt ? formatDateTime(entry.rental.plannedEndAt) : '—'}
                     </td>
-                    <td className="td text-right">{formatMoney(rental.amount)}</td>
+                    <td className="td text-right">{formatMoney(entry.rental.amount)}</td>
+                    <td className="td text-right text-emerald-400">
+                      {formatMoney(entry.earnedAmount)}
+                    </td>
                     <td className="td">
                       <StatusBadge
-                        label={rentalStatusLabels[rental.status]}
-                        tone={rentalStatusTones[rental.status]}
+                        label={rentalStatusLabels[entry.rental.status]}
+                        tone={rentalStatusTones[entry.rental.status]}
                       />
                     </td>
                   </tr>

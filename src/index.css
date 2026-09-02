@@ -3,6 +3,12 @@
 @tailwind utilities;
 
 @layer base {
+  /* Приложение жёстко тёмное: сообщаем браузеру, чтобы нативные контролы
+     (select, календарь date-инпутов) рендерились в тёмной теме, а не в системной светлой */
+  html {
+    color-scheme: dark;
+  }
+
   body {
     @apply bg-surface text-zinc-200 font-sans antialiased;
   }

@@ -186,6 +186,12 @@ export interface AssetTotals {
   chargerTotal: number
 }
 
+/** Аренда в карточке актива: сама аренда + сколько принёс именно этот актив */
+export interface AssetRentalEntry {
+  rental: Rental
+  earnedAmount: number
+}
+
 /** Карточка актива: паспорт + журнал пробега + операции + аренды + итоги + история */
 export interface AssetDetail {
   asset: Asset
@@ -197,7 +203,7 @@ export interface AssetDetail {
   /** Журнал циклов перезарядки (battery); пустой список — нет */
   chargeCycleLog: ChargeCycleLogEntry[]
   transactions: Transaction[]
-  rentals: Rental[]
+  rentals: AssetRentalEntry[]
   events: AssetEvent[]
   totals: AssetTotals
 }

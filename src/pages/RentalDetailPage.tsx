@@ -735,6 +735,7 @@ export function RentalDetailPage() {
       {issueOpen && (
         <IssueModal
           remaining={remaining}
+          firstPayment={nextPaymentRemaining}
           initialDate={toLocalInputValue(new Date(rental.startAt))}
           onClose={() => setIssueOpen(false)}
           onSubmit={async (date) => {
@@ -1028,6 +1029,7 @@ function PaymentRow({
         <input
           type="datetime-local"
           value={date}
+          max={toLocalInputValue(new Date())}
           onChange={(event) => setDate(event.target.value)}
           className="input"
           title={isExpense ? 'Дата возврата' : 'Дата оплаты'}
@@ -1095,11 +1097,22 @@ function PaymentModal({
 
   // Выбор стратегии — только когда платёж перекрывает остаток ближайшего платежа графика
   const showStrategy = nextPaymentRemaining != null && Number(amount) > nextPaymentRemaining
+  // По выкупу нельзя принять больше остатка по договору — переплата ломает график;
+  // «на чай» — отдельной приходной операцией по активу
+  const isBuyout = nextPaymentRemaining != null
+  const exceedsBuyoutDebt = isBuyout && Number(amount) > remaining
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
     if (!amount.trim() || Number(amount) <= 0) {
       setError('Укажите сумму оплаты')
+      return
+    }
+    if (exceedsBuyoutDebt) {
+      setError(
+        `Платёж больше остатка по выкупу (${formatMoney(remaining)}). ` +
+          'Если клиент хочет внести больше — оформите чаевые отдельной приходной операцией по активу',
+      )
       return
     }
     if (!accountId) {
@@ -1165,7 +1178,19 @@ function PaymentModal({
               </p>
             )
           )}
+          {exceedsBuyoutDebt && (
+            <p className="mt-1.5 text-xs text-red-400">
+              Больше остатка по выкупу ({formatMoney(remaining)}). Лишнее — только чаевыми,
+              отдельной приходной операцией по активу
+            </p>
+          )}
         </div>
+        {showStrategy && (
+          <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
+            Если клиент просто решил оставить чаевые сверх обязательного платежа — не принимайте их тут: оформите
+            чаевые отдельной приходной операцией по активу. Иначе собьется график платежей. 
+          </p>
+        )}
         {showStrategy && (
           <div>
             <p className="mb-1.5 text-sm text-zinc-400">Переплата по графику</p>
@@ -1200,6 +1225,7 @@ function PaymentModal({
           <input
             type="datetime-local"
             value={date}
+            max={toLocalInputValue(new Date())}
             onChange={(event) => setDate(event.target.value)}
             className="input"
           />
@@ -1222,7 +1248,11 @@ function PaymentModal({
             ))}
           </select>
         </div>
-        <button type="submit" disabled={submitting} className="btn-primary w-full">
+        <button
+          type="submit"
+          disabled={submitting || exceedsBuyoutDebt}
+          className="btn-primary w-full disabled:cursor-not-allowed disabled:opacity-40"
+        >
           <Banknote size={16} />
           Принять оплату
         </button>
@@ -1252,14 +1282,15 @@ function CompleteModal({
   onSubmit: (date: string) => Promise<void>
 }) {
   const isBuyout = rental.kind === 'rent_to_own'
-  // По умолчанию: у rent — дата окончания периода из заявки, у выкупа — текущий момент
-  const [date, setDate] = useState(
-    isBuyout
-      ? toLocalInputValue(new Date())
-      : rental.plannedEndAt
-        ? toLocalInputValue(new Date(rental.plannedEndAt))
-        : toLocalInputValue(new Date())
-  )
+  // По умолчанию: у rent — дата окончания периода, но не позже текущего момента
+  // (приём «из будущего» запрещён), у выкупа — текущий момент
+  const [date, setDate] = useState(() => {
+    const now = Date.now()
+    if (!isBuyout && rental.plannedEndAt) {
+      return toLocalInputValue(new Date(Math.min(now, new Date(rental.plannedEndAt).getTime())))
+    }
+    return toLocalInputValue(new Date(now))
+  })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -1349,6 +1380,7 @@ function CompleteModal({
             type="datetime-local"
             required
             value={date}
+            max={toLocalInputValue(new Date())}
             onChange={(event) => setDate(event.target.value)}
             className="input"
           />
@@ -1387,14 +1419,18 @@ function CompleteModal({
   )
 }
 
-/** Модалка выдачи черновика: дата выдачи (по умолчанию — начало из заявки); можно с непогашенным остатком. */
+/** Модалка выдачи черновика: дата выдачи (по умолчанию — начало из заявки); можно с непогашенным остатком.
+ *  Для выкупа — напоминание забрать первый платёж по графику (полную сумму выкупа не показываем). */
 function IssueModal({
   remaining,
+  firstPayment,
   initialDate,
   onClose,
   onSubmit,
 }: {
   remaining: number
+  /** Остаток ближайшего платежа графика (rent_to_own); null — обычная аренда */
+  firstPayment: number | null
   /** Дата начала аренды из заявки (datetime-local) */
   initialDate: string
   onClose: () => void
@@ -1430,6 +1466,7 @@ function IssueModal({
           <input
             type="datetime-local"
             value={date}
+            max={toLocalInputValue(new Date())}
             onChange={(event) => setDate(event.target.value)}
             className="input"
           />
@@ -1437,10 +1474,16 @@ function IssueModal({
             Период аренды будет считаться от этой даты
           </p>
         </div>
-        {remaining > 0 && (
+        {firstPayment != null && firstPayment > 0 ? (
           <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
-            Остаток к оплате: {formatMoney(remaining)} — можно выдать сейчас и принять оплату позже
+            Перед выдачей не забудьте забрать первый платёж по графику: {formatMoney(firstPayment)}
           </p>
+        ) : (
+          remaining > 0 && (
+            <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
+              Остаток к оплате: {formatMoney(remaining)} — можно выдать сейчас и принять оплату позже
+            </p>
+          )
         )}
         <button type="submit" disabled={submitting} className="btn-primary w-full">
           <KeyRound size={16} />
@@ -1587,6 +1630,7 @@ function EarlyReturnModal({
             type="datetime-local"
             required
             value={date}
+            max={toLocalInputValue(new Date())}
             onChange={(event) => setDate(event.target.value)}
             className="input"
           />
