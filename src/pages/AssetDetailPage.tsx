@@ -11,6 +11,7 @@ import {
   Check,
   ChevronDown,
   Gauge,
+  History,
   Info,
   Lock,
   Pencil,
@@ -31,6 +32,7 @@ import { hasPermission, PERMISSIONS } from '../auth/permissions'
 import type { AccountOption, Asset, AssetDetail, AssetEventType, BikeModel, Category, CategoryKind, ChargeCycleLogEntry, GpsTracker, MileageLogEntry, Transaction } from '../types'
 import { EmptyState } from '../components/EmptyState'
 import { ChargeCyclesModal } from '../components/ChargeCyclesModal'
+import { EventFeed } from '../components/EventFeed'
 import { MileageModal } from '../components/MileageModal'
 import { Modal } from '../components/Modal'
 import { StatusBadge } from '../components/StatusBadge'
@@ -87,7 +89,6 @@ export function AssetDetailPage() {
   const [mileageExpanded, setMileageExpanded] = useState(false)
   const [transactionsExpanded, setTransactionsExpanded] = useState(false)
   const [rentalsExpanded, setRentalsExpanded] = useState(false)
-  const [eventsExpanded, setEventsExpanded] = useState(false)
   const [cyclesExpanded, setCyclesExpanded] = useState(false)
 
   const loadDetail = useCallback(async () => {
@@ -913,58 +914,13 @@ export function AssetDetailPage() {
       </section>
 
       {/* История: лента событий актива (в самом низу карточки) */}
-      <section className="panel">
-        <div className={`flex items-center justify-between px-5 py-4 ${eventsExpanded ? 'border-b border-white/5' : ''}`}>
-          <button
-            type="button"
-            onClick={() => setEventsExpanded((value) => !value)}
-            className="inline-flex items-center gap-2 font-semibold text-zinc-100 transition hover:text-white"
-          >
-            <ChevronDown
-              size={16}
-              className={`text-zinc-500 transition-transform ${eventsExpanded ? '' : '-rotate-90'}`}
-            />
-            История
-            <span className="text-sm font-normal text-zinc-500">{events.length}</span>
-          </button>
-        </div>
-        {eventsExpanded && (
-          events.length === 0 ? (
-          <EmptyState icon={Bike} title="Событий пока нет" />
-        ) : (
-          <ul className="divide-y divide-white/5">
-            {events.map((event) => {
-              const Icon = eventIcons[event.type] ?? Bike
-              return (
-                <li key={event.id} className="flex items-center gap-3 px-5 py-2.5">
-                  <span className="rounded-lg bg-white/5 p-2 text-zinc-400">
-                    <Icon size={16} />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm text-zinc-200">
-                      {assetEventTypeLabels[event.type] ?? event.type}
-                      {event.amount != null && (
-                        <span className="ml-2 text-zinc-400">({formatMoney(event.amount)})</span>
-                      )}
-                    </p>
-                    {event.comment && (
-                      <p className="mt-0.5 truncate text-xs text-zinc-500" title={event.comment}>
-                        {event.comment}
-                      </p>
-                    )}
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <span className="block text-xs text-zinc-500">{formatDateTime(event.date)}</span>
-                    {event.createdByName && (
-                      <span className="block text-xs text-zinc-600">{event.createdByName}</span>
-                    )}
-                  </div>
-                </li>
-              )
-            })}
-          </ul>
-          )
-        )}
+      <section className="panel p-5">
+        <h2 className="mb-3 flex items-center gap-2 font-semibold text-zinc-100">
+          <History size={16} className="text-zinc-500" />
+          История
+          <span className="text-sm font-normal text-zinc-500">{events.length}</span>
+        </h2>
+        <EventFeed events={events} icons={eventIcons} labels={assetEventTypeLabels} />
       </section>
 
       <MileageModal

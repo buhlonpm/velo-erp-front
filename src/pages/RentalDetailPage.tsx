@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Banknote, Check, CheckCircle2, ClipboardList, History, KeyRound, Lock, Pencil, PiggyBank, Trash2, Undo2 } from 'lucide-react'
+import { ArrowLeft, Banknote, CalendarClock, CalendarPlus, Check, CheckCircle2, ClipboardList, History, KeyRound, Lock, Pencil, PiggyBank, RotateCcw, Trash2, Undo2 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { hasPermission, PERMISSIONS } from '../auth/permissions'
-import type { AccountOption, Customer, OverpaymentStrategy, Rental, RentalEvent, RentalExtension, RentalItem, RentalScheduleItem, TariffUnit, Transaction } from '../types'
+import type { AccountOption, Customer, OverpaymentStrategy, Rental, RentalEvent, RentalEventType, RentalExtension, RentalItem, RentalScheduleItem, TariffUnit, Transaction } from '../types'
 import { EmptyState } from '../components/EmptyState'
+import { EventFeed } from '../components/EventFeed'
 import { Modal } from '../components/Modal'
 import { StatusBadge } from '../components/StatusBadge'
 import { Loading } from '../components/Loading'
@@ -42,6 +44,18 @@ const scheduleStatusTones: Record<RentalScheduleItem['status'], Tone> = {
   next: 'sky',
   pending: 'zinc',
   overdue: 'red',
+}
+
+/** Иконки событий ленты истории аренды */
+const rentalEventIcons: Record<RentalEventType, LucideIcon> = {
+  created: ClipboardList,
+  payment: Banknote,
+  issued: KeyRound,
+  extension: CalendarPlus,
+  schedule: CalendarClock,
+  item_return: Undo2,
+  refund: RotateCcw,
+  completed: CheckCircle2,
 }
 
 export function RentalDetailPage() {
@@ -649,39 +663,20 @@ export function RentalDetailPage() {
         <h2 className="mb-3 flex items-center gap-2 font-semibold text-zinc-100">
           <History size={16} className="text-zinc-500" />
           История
+          <span className="text-sm font-normal text-zinc-500">{events.length}</span>
         </h2>
-        {events.length === 0 ? (
-          <p className="text-sm text-zinc-500">Событий пока нет</p>
-        ) : (
-          <ul>
-            {events.map((event) => (
-              <li
-                key={event.id}
-                className="flex items-start justify-between gap-4 border-b border-white/5 py-2 text-sm last:border-0"
-              >
-                <div>
-                  <span className="text-zinc-300">{rentalEventTypeLabels[event.type]}</span>
-                  {event.comment && <span className="text-zinc-500"> — {event.comment}</span>}
-                  {event.amount != null && event.amount > 0 && (
-                    <span className="text-zinc-400"> · {formatMoney(event.amount)}</span>
-                  )}
-                  {event.type === 'extension' && event.fromEndAt && event.toEndAt && (
-                    <span className="block text-xs text-zinc-600">
-                      Конец периода: {formatDateTime(event.fromEndAt)} →{' '}
-                      {formatDateTime(event.toEndAt)}
-                    </span>
-                  )}
-                </div>
-                <div className="shrink-0 text-right">
-                  <span className="block text-xs text-zinc-500">{formatDateTime(event.date)}</span>
-                  {event.createdByName && (
-                    <span className="block text-xs text-zinc-600">{event.createdByName}</span>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+        <EventFeed
+          events={events}
+          icons={rentalEventIcons}
+          labels={rentalEventTypeLabels}
+          renderExtra={(event) =>
+            event.type === 'extension' && event.fromEndAt && event.toEndAt ? (
+              <span className="block text-xs text-zinc-600">
+                Конец периода: {formatDateTime(event.fromEndAt)} → {formatDateTime(event.toEndAt)}
+              </span>
+            ) : null
+          }
+        />
       </section>
 
       {/* Force-удаление аренды без следа из любого статуса — только ADMIN (скрытая ссылка) */}

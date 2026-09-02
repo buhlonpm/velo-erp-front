@@ -4,7 +4,8 @@ import { Pencil, Plus, Search, Trash2, Users } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { Customer } from '../types'
 import { Modal } from '../components/Modal'
-import { PhoneInput } from '../components/PhoneInput'
+import { CustomerModal } from '../components/CustomerModal'
+import type { CustomerForm } from '../components/CustomerModal'
 import { EmptyState } from '../components/EmptyState'
 import { Loading } from '../components/Loading'
 
@@ -37,25 +38,22 @@ export function CustomersPage() {
     return () => clearTimeout(timer)
   }, [query, loadCustomers])
 
+  // Ошибки сохранения показывает сама модалка (ловит ApiError из onSave)
   const saveCustomer = async (form: CustomerForm) => {
-    try {
-      const body = {
-        fullName: form.fullName,
-        phone: form.phone,
-        ...(form.email ? { email: form.email } : {}),
-        ...(form.address ? { address: form.address } : {}),
-        ...(form.note ? { note: form.note } : {}),
-      }
-      if (form.id) {
-        await api(`/customers/${form.id}`, { method: 'PATCH', body: JSON.stringify(body) })
-      } else {
-        await api('/customers', { method: 'POST', body: JSON.stringify(body) })
-      }
-      await loadCustomers(query)
-      setModal({ open: false })
-    } catch (err) {
-      showError(err, 'Не удалось сохранить клиента')
+    const body = {
+      fullName: form.fullName,
+      phone: form.phone,
+      ...(form.email ? { email: form.email } : {}),
+      ...(form.address ? { address: form.address } : {}),
+      ...(form.note ? { note: form.note } : {}),
     }
+    if (form.id) {
+      await api(`/customers/${form.id}`, { method: 'PATCH', body: JSON.stringify(body) })
+    } else {
+      await api('/customers', { method: 'POST', body: JSON.stringify(body) })
+    }
+    await loadCustomers(query)
+    setModal({ open: false })
   }
 
   return (
@@ -250,114 +248,3 @@ function DeleteCustomerModal({
   )
 }
 
-interface CustomerForm {
-  id?: string
-  fullName: string
-  phone: string
-  email: string
-  address: string
-  note: string
-}
-
-function CustomerModal({
-  state,
-  onClose,
-  onSave,
-}: {
-  state: { open: boolean; customer?: Customer }
-  onClose: () => void
-  onSave: (form: CustomerForm) => void
-}) {
-  const editing = state.customer
-  const [fullName, setFullName] = useState(editing?.fullName ?? '')
-  const [phone, setPhone] = useState(editing?.phone ?? '')
-  const [email, setEmail] = useState(editing?.email ?? '')
-  const [address, setAddress] = useState(editing?.address ?? '')
-  const [note, setNote] = useState(editing?.note ?? '')
-
-  const handleSubmit = (event: FormEvent) => {
-    event.preventDefault()
-    if (!fullName.trim() || !phone.trim()) return
-    onSave({
-      id: editing?.id,
-      fullName: fullName.trim(),
-      phone: phone.trim(),
-      email: email.trim(),
-      address: address.trim(),
-      note: note.trim(),
-    })
-  }
-
-  return (
-    <Modal
-      open={state.open}
-      title={editing ? `Редактировать: ${editing.fullName}` : 'Добавить клиента'}
-      onClose={onClose}
-    >
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <label className="block">
-          <span className="mb-1.5 block text-sm text-zinc-400">ФИО</span>
-          <input
-            type="text"
-            required
-            value={fullName}
-            onChange={(event) => setFullName(event.target.value)}
-            placeholder="Иван Петров"
-            className="input"
-          />
-        </label>
-        <div className="grid grid-cols-2 gap-4">
-          <label className="block">
-            <span className="mb-1.5 block text-sm text-zinc-400">Телефон</span>
-            <PhoneInput
-              required
-              value={phone}
-              onChange={setPhone}
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-sm text-zinc-400">Адрес</span>
-            <input
-              type="text"
-              value={address}
-              onChange={(event) => setAddress(event.target.value)}
-              placeholder="Город, улица, дом"
-              className="input"
-            />
-          </label>
-        </div>
-        <label className="block">
-          <span className="mb-1.5 block text-sm text-zinc-400">Email</span>
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="client@mail.ru"
-            className="input"
-          />
-        </label>
-        <label className="block">
-          <span className="mb-1.5 block text-sm text-zinc-400">Заметка</span>
-          <textarea
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            rows={2}
-            className="input resize-none"
-          />
-        </label>
-        <div className="flex justify-end gap-3 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg px-4 py-2 text-sm text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
-          >
-            Отмена
-          </button>
-          <button type="submit" className="btn-primary">
-            {editing ? 'Сохранить' : 'Добавить'}
-          </button>
-        </div>
-      </form>
-    </Modal>
-  )
-}

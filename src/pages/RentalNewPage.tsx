@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Check, Plus, X } from 'lucide-react'
+import { ArrowLeft, Check, Plus, UserPlus, X } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import type { Asset, AssetDetail, AssetType, BikeModel, Customer, Rental, RentalKind, TariffUnit } from '../types'
 import { formatDateTime, formatMoney, splitDuration } from '../lib/format'
 import { assetTypeLabels, rentalKindLabels, tariffUnitLabels, tariffUnitSeconds } from '../lib/labels'
 import { Loading } from '../components/Loading'
 import { Modal } from '../components/Modal'
+import { CustomerModal } from '../components/CustomerModal'
+import type { CustomerForm } from '../components/CustomerModal'
 
 /** Значение для input datetime-local из Date (в локальной TZ) */
 function toLocalInputValue(date: Date): string {
@@ -96,6 +98,7 @@ export function RentalNewPage() {
   const [notDraft, setNotDraft] = useState(false)
 
   const [customerId, setCustomerId] = useState('')
+  const [customerModalOpen, setCustomerModalOpen] = useState(false)
   const [kind, setKind] = useState<RentalKind>('rent')
   const [startAt, setStartAt] = useState(() => toLocalInputValue(new Date()))
   // Срок аренды: конец периода считает сервер (plannedEndAt = startAt + duration × unit);
@@ -355,6 +358,23 @@ export function RentalNewPage() {
     }
   }
 
+  // Быстрое добавление клиента прямо из конструктора: созданный сразу подставляется в селект
+  const saveNewCustomer = async (form: CustomerForm) => {
+    const created = await api<Customer>('/customers', {
+      method: 'POST',
+      body: JSON.stringify({
+        fullName: form.fullName,
+        phone: form.phone,
+        ...(form.email ? { email: form.email } : {}),
+        ...(form.address ? { address: form.address } : {}),
+        ...(form.note ? { note: form.note } : {}),
+      }),
+    })
+    setCustomers((prev) => [...prev, created])
+    setCustomerId(created.id)
+    setCustomerModalOpen(false)
+  }
+
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
     const chosenRows = rows.filter((row) => row.assetId)
@@ -497,21 +517,31 @@ export function RentalNewPage() {
             <h2 className="text-sm font-semibold text-zinc-100">Клиент и условия</h2>
             <div>
               <label className="mb-1.5 block text-sm text-zinc-400">Клиент</label>
-              <select
-                required
-                value={customerId}
-                onChange={(event) => setCustomerId(event.target.value)}
-                className="input"
-              >
-                <option value="" disabled>
-                  Выберите клиента…
-                </option>
-                {customers.map((customer) => (
-                  <option key={customer.id} value={customer.id}>
-                    {customer.fullName}
+              <div className="flex gap-2">
+                <select
+                  required
+                  value={customerId}
+                  onChange={(event) => setCustomerId(event.target.value)}
+                  className="input"
+                >
+                  <option value="" disabled>
+                    Выберите клиента…
                   </option>
-                ))}
-              </select>
+                  {customers.map((customer) => (
+                    <option key={customer.id} value={customer.id}>
+                      {customer.fullName}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setCustomerModalOpen(true)}
+                  title="Новый клиент"
+                  className="shrink-0 rounded-lg border border-white/10 px-3 text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+                >
+                  <UserPlus size={16} />
+                </button>
+              </div>
             </div>
 
             <div className="flex gap-1 rounded-lg border border-white/10 p-1">
@@ -788,6 +818,13 @@ export function RentalNewPage() {
           </div>
         </div>
       </Modal>
+
+      {/* Быстрое добавление клиента; созданный сразу подставляется в селект */}
+      <CustomerModal
+        state={{ open: customerModalOpen }}
+        onClose={() => setCustomerModalOpen(false)}
+        onSave={saveNewCustomer}
+      />
     </div>
   )
 }
