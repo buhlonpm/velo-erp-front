@@ -152,7 +152,11 @@ export function DashboardPage() {
               rentals={dashboard.endingSoon}
               badge={(rental) => {
                 const anchor = rental.nextPaymentDue ?? rental.plannedEndAt
-                return anchor ? `осталось ${formatRemaining(anchor)}` : '—'
+                if (!anchor) return '—'
+                // минутное окно между «ещё не просрочен» (бэк) и «уже прошло» (formatRemaining):
+                // платёж внутри текущей минуты — показываем «сегодня», а не прочерк
+                const left = formatRemaining(anchor)
+                return left === '—' ? 'сегодня' : `осталось ${left}`
               }}
             />
           )}

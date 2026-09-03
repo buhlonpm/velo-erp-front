@@ -1303,20 +1303,8 @@ function CompleteModal({
           ? 'earlier'
           : 'later'
 
-  // Доплата за пересрочку: пересчёт по формуле бэка — ceil по единицам тарифа от startAt
-  const startMs = new Date(rental.startAt).getTime()
-  const unitsAt = (item: RentalItem, atMs: number) => {
-    const unitMs = (UNIT_SECONDS[item.tariffUnit] ?? 86400) * 1000
-    return Math.max(1, Math.ceil((atMs - startMs) / unitMs))
-  }
-  const extraDue =
-    dayShift === 'later' && end != null && picked != null
-      ? rental.items.reduce(
-          (sum, item) => sum + item.rate * (unitsAt(item, picked.getTime()) - unitsAt(item, end.getTime())),
-          0
-        )
-      : 0
   // Подсказка, на сколько продлить: покрыть разрыв единицами тарифа первой позиции
+  // (сумма аренды фиксированная, просрочка деньгами не досчитывается — продление пересчитает)
   const firstItem = rental.items.find((item) => !item.parentItemId)
   const extendHint =
     dayShift === 'later' && end != null && picked != null && firstItem
@@ -1388,9 +1376,9 @@ function CompleteModal({
         </div>
         {!isBuyout && dayShift === 'later' && (
           <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-sm text-amber-400">
-            Возврат в другой день — доплата {formatMoney(extraDue)}. Завершить нельзя:
-            {extendHint ? ` продлите аренду на ${extendHint},` : ' продлите аренду,'} примите
-            доплату — после этого аренду можно завершить.
+            Возврат позже дня окончания периода — завершить нельзя:
+            {extendHint ? ` продлите аренду на ${extendHint}` : ' продлите аренду'} — после этого
+            аренду можно завершить.
           </p>
         )}
         {!isBuyout && dayShift === 'earlier' && (
