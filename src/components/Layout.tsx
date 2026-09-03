@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import {
+  BarChart3,
   Bike,
   ClipboardList,
   LayoutDashboard,
@@ -29,6 +30,7 @@ const navItems: NavItem[] = [
   { to: '/rentals', label: 'Аренды', icon: ClipboardList },
   { to: '/customers', label: 'Клиенты', icon: Users },
   { to: '/finance', label: 'Финансы', icon: Wallet, permission: PERMISSIONS.FINANCE_VIEW },
+  { to: '/reports', label: 'Отчёты', icon: BarChart3, permission: PERMISSIONS.FINANCE_VIEW },
 ]
 
 const adminNavItem: NavItem = { to: '/settings', label: 'Настройки', icon: Settings }

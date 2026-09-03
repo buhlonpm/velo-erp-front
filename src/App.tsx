@@ -11,6 +11,7 @@ import { RentalNewPage } from './pages/RentalNewPage'
 import { RentalDetailPage } from './pages/RentalDetailPage'
 import { CustomersPage } from './pages/CustomersPage'
 import { FinancePage } from './pages/FinancePage'
+import { ReportsPage } from './pages/ReportsPage'
 import { LoginPage } from './pages/LoginPage'
 import { SettingsPage } from './pages/SettingsPage'
 
@@ -34,6 +35,9 @@ export default function App() {
               <Route path="customers" element={<CustomersPage />} />
               <Route path="finance" element={<PermissionRoute permission={PERMISSIONS.FINANCE_VIEW} />}>
                 <Route index element={<FinancePage />} />
+              </Route>
+              <Route path="reports" element={<PermissionRoute permission={PERMISSIONS.FINANCE_VIEW} />}>
+                <Route index element={<ReportsPage />} />
               </Route>
               <Route element={<AdminRoute />}>
                 <Route path="settings" element={<SettingsPage />} />

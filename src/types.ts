@@ -482,3 +482,32 @@ export interface Dashboard {
   endingSoon: DashboardRental[]
   latest: DashboardRental[]
 }
+
+
+/** Строка P&L-отчёта: статья и сумма за период; capex — покупка/продажа техники */
+export interface PnlRow {
+  categoryId: string
+  categoryName: string
+  total: number
+  capex: boolean
+}
+
+/** GET /api/reports/pnl — кассовый P&L за период (календарные даты, включительно) */
+export interface PnlReport {
+  from: string
+  to: string
+  income: PnlRow[]
+  expense: PnlRow[]
+  incomeTotal: number
+  expenseTotal: number
+  /** Операционная прибыль — без покупки/продажи техники */
+  operatingProfit: number
+  /** Вложено в технику за период */
+  capexOut: number
+  /** Выручено за технику за период */
+  capexIn: number
+  /** Итог с капексом */
+  netProfit: number
+  /** Вложения владельца («Введение денег в бизнес») — в приходы и прибыль не входят */
+  ownerInvestmentTotal: number
+}
