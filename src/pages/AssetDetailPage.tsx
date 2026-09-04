@@ -1127,6 +1127,9 @@ function AssetTransactionModal({
   const [accountId, setAccountId] = useState(editing?.accountId ?? '')
   const [categoryId, setCategoryId] = useState(editing?.categoryId ?? '')
   const [amount, setAmount] = useState(editing ? String(editing.amount) : '')
+  const [date, setDate] = useState(() =>
+    toLocalInputValue(editing ? new Date(editing.date) : new Date())
+  )
   const [comment, setComment] = useState(editing?.comment ?? '')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -1148,6 +1151,7 @@ function AssetTransactionModal({
             accountId,
             categoryId,
             amount: value,
+            date: new Date(date).toISOString(),
             comment: comment.trim(),
           }),
         })
@@ -1159,6 +1163,7 @@ function AssetTransactionModal({
             categoryId,
             kind,
             amount: value,
+            date: new Date(date).toISOString(),
             comment: comment.trim(),
             assetId,
           }),
@@ -1242,6 +1247,17 @@ function AssetTransactionModal({
             onChange={(event) => setAmount(event.target.value)}
             className="input"
             placeholder="0"
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Дата</label>
+          <input
+            required
+            type="datetime-local"
+            value={date}
+            max={toLocalInputValue(new Date())}
+            onChange={(event) => setDate(event.target.value)}
+            className="input"
           />
         </div>
         <div>

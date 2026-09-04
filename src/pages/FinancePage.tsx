@@ -29,6 +29,12 @@ const accountTypeIcons: Record<AccountType, LucideIcon> = {
 
 type KindFilter = 'all' | CategoryKind
 
+/** Значение для input type="datetime-local" в локальном поясе */
+function toLocalInputValue(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 export function FinancePage() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<Category[]>([])
@@ -119,6 +125,7 @@ export function FinancePage() {
     categoryId: string
     kind: CategoryKind
     amount: number
+    date: string
     comment: string
   }) => {
     try {
@@ -130,6 +137,7 @@ export function FinancePage() {
             accountId: form.accountId,
             categoryId: form.categoryId,
             amount: form.amount,
+            date: form.date,
             comment: form.comment,
           }),
         })
@@ -141,6 +149,7 @@ export function FinancePage() {
             categoryId: form.categoryId,
             kind: form.kind,
             amount: form.amount,
+            date: form.date,
             comment: form.comment,
           }),
         })
@@ -488,6 +497,7 @@ function TransactionModal({
     categoryId: string
     kind: CategoryKind
     amount: number
+    date: string
     comment: string
   }) => void
 }) {
@@ -496,6 +506,9 @@ function TransactionModal({
   const [accountId, setAccountId] = useState(editing?.accountId ?? '')
   const [categoryId, setCategoryId] = useState(editing?.categoryId ?? '')
   const [amount, setAmount] = useState(editing ? String(editing.amount) : '')
+  const [date, setDate] = useState(() =>
+    toLocalInputValue(editing ? new Date(editing.date) : new Date())
+  )
   const [comment, setComment] = useState(editing?.comment ?? '')
 
   const kindCategories = categories.filter((c) => c.kind === kind)
@@ -504,7 +517,15 @@ function TransactionModal({
     event.preventDefault()
     const value = Number(amount)
     if (!accountId || !categoryId || !value || value <= 0) return
-    onSave({ id: editing?.id, accountId, categoryId, kind, amount: value, comment: comment.trim() })
+    onSave({
+      id: editing?.id,
+      accountId,
+      categoryId,
+      kind,
+      amount: value,
+      date: new Date(date).toISOString(),
+      comment: comment.trim(),
+    })
     setAmount('')
     setComment('')
   }
@@ -592,6 +613,17 @@ function TransactionModal({
             onChange={(event) => setAmount(event.target.value)}
             className="input"
             placeholder="0"
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm text-zinc-400">Дата</label>
+          <input
+            required
+            type="datetime-local"
+            value={date}
+            max={toLocalInputValue(new Date())}
+            onChange={(event) => setDate(event.target.value)}
+            className="input"
           />
         </div>
         <div>
