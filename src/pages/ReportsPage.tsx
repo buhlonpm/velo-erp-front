@@ -6,12 +6,13 @@ import { Loading } from '../components/Loading'
 import { EmptyState } from '../components/EmptyState'
 import { formatMoney, todayDateInput } from '../lib/format'
 
-type Preset = 'month' | 'prevMonth' | '30days'
+type Preset = 'month' | 'prevMonth' | '30days' | 'allTime'
 
 const presetLabels: Record<Preset, string> = {
   month: 'Этот месяц',
   prevMonth: 'Прошлый месяц',
   '30days': '30 дней',
+  allTime: 'За всё время',
 }
 
 function presetRange(preset: Preset): { from: string; to: string } {
@@ -25,6 +26,10 @@ function presetRange(preset: Preset): { from: string; to: string } {
     const first = new Date(now.getFullYear(), now.getMonth() - 1, 1)
     const last = new Date(now.getFullYear(), now.getMonth(), 0)
     return { from: iso(first), to: iso(last) }
+  }
+  if (preset === 'allTime') {
+    // старт подставит бэк — дата первой операции по кассе
+    return { from: '', to: iso(now) }
   }
   const from = new Date(now)
   from.setDate(from.getDate() - 29)
@@ -48,7 +53,13 @@ export function ReportsPage() {
     setError('')
     try {
       const accountParam = accountId === 'all' ? '' : `&accountId=${accountId}`
-      setReport(await api<PnlReport>(`/reports/pnl?from=${range.from}&to=${range.to}${accountParam}`))
+      const fromParam = range.from ? `&from=${range.from}` : '' // пустой from — «за всё время»
+      const data = await api<PnlReport>(`/reports/pnl?to=${range.to}${fromParam}${accountParam}`)
+      setReport(data)
+      // у «за всё время» бэк вернул реальный старт (первая операция) — показываем его в инпуте
+      if (!range.from && data.from) {
+        setRange((prev) => (prev.from ? prev : { ...prev, from: data.from }))
+      }
     } catch (err) {
       setReport(null)
       setError(err instanceof ApiError ? err.message : 'Не удалось загрузить отчёт')

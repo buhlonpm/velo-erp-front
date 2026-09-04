@@ -1773,45 +1773,60 @@ function BikeModelDetailsModal({
         {editingInfo ? (
           <form onSubmit={saveInfo} className="space-y-2">
             <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="mb-1 block text-xs text-zinc-500">Бренд</label>
+                <input
+                  required
+                  value={infoBrand}
+                  onChange={(event) => setInfoBrand(event.target.value)}
+                  className="input"
+                  placeholder="Бренд"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-zinc-500">Модель</label>
+                <input
+                  required
+                  value={infoModel}
+                  onChange={(event) => setInfoModel(event.target.value)}
+                  className="input"
+                  placeholder="Модель"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-zinc-500">Характеристики</label>
               <input
-                required
-                value={infoBrand}
-                onChange={(event) => setInfoBrand(event.target.value)}
+                value={infoSpecs}
+                onChange={(event) => setInfoSpecs(event.target.value)}
                 className="input"
-                placeholder="Бренд"
-              />
-              <input
-                required
-                value={infoModel}
-                onChange={(event) => setInfoModel(event.target.value)}
-                className="input"
-                placeholder="Модель"
+                placeholder="500 Вт, 48В 17.5Ач"
               />
             </div>
-            <input
-              value={infoSpecs}
-              onChange={(event) => setInfoSpecs(event.target.value)}
-              className="input"
-              placeholder="Характеристики"
-            />
             <div className="grid grid-cols-2 gap-2">
-              <input
-                type="number"
-                min={1}
-                value={infoMaxMileage}
-                onChange={(event) => setInfoMaxMileage(event.target.value)}
-                className="input"
-                placeholder="Ресурс, км (10000)"
-              />
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={infoResidual}
-                onChange={(event) => setInfoResidual(event.target.value)}
-                className="input"
-                placeholder="Остаточная цена, % (20)"
-              />
+              <div>
+                <label className="mb-1 block text-xs text-zinc-500">Ресурс, км</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={infoMaxMileage}
+                  onChange={(event) => setInfoMaxMileage(event.target.value)}
+                  className="input"
+                  placeholder="10000"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-zinc-500">Остаточная цена, %</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={infoResidual}
+                  onChange={(event) => setInfoResidual(event.target.value)}
+                  className="input"
+                  placeholder="20"
+                />
+              </div>
             </div>
             <div className="flex justify-end gap-1">
               <button
